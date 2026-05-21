@@ -230,7 +230,7 @@ def stepwise_motion(intervals):
 
 def pitch_motif_score(seq):
     """Pitch-motif score: 0.6 * coverage + 0.4 * pattern_strength."""
-    pitches = pitch_stream(seq)
+    pitches = [p for p in pitch_stream(seq) if not is_rest(p)]
     N = len(pitches)
     if N == 0:
         return 0.0, {}

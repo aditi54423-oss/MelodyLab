@@ -1,6 +1,6 @@
 import streamlit as st
 from utils.melodies import MINUET_PITCHES, MINUET_RHYTHM
-from utils.scorecard import evaluate_melody, infer_duration_vocab_size
+from utils.scorecard import evaluate_sequence, infer_duration_vocab_size
 from models.random_model import RandomMelodyGenerator
 from models.markov1 import FirstOrderMarkovGenerator
 from models.markov2 import SecondOrderMarkovGenerator
@@ -119,8 +119,9 @@ def page_generate():
         st.session_state.generated_melody = melody
         
         # Evaluate melody with scorecard
-        d_max = infer_duration_vocab_size([MINUET_PITCHES], [MINUET_RHYTHM])
-        scorecard_results = evaluate_melody(melody, d_max)
+        training_melody = list(zip(MINUET_PITCHES, MINUET_RHYTHM))
+        d_max = infer_duration_vocab_size([training_melody])
+        scorecard_results = evaluate_sequence(melody, d_max)
         st.session_state.scorecard_results = scorecard_results
         
         # Move to results page
@@ -167,6 +168,156 @@ def get_category(score, metric_type="standard"):
         else:
             return "Low"
 
+
+def clamp_score(score):
+    """Keep all score values safely inside the 0-1 display range."""
+    try:
+        return max(0.0, min(1.0, float(score)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_score_color(score):
+    """Return a color for score bands."""
+    score = clamp_score(score)
+    if score >= 0.7:
+        return "#22c55e"  # green
+    if score >= 0.4:
+        return "#f59e0b"  # amber
+    return "#ef4444"      # red
+
+
+def inject_scorecard_css():
+    """Style the scorecard so it looks like part of the MelodyLab UI."""
+    st.markdown(
+        """
+        <style>
+        .score-hero {
+            padding: 1.35rem 1.5rem;
+            border-radius: 24px;
+            background: linear-gradient(135deg, #fff7ed 0%, #eef2ff 55%, #fdf2f8 100%);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            box-shadow: 0 14px 35px rgba(15, 23, 42, 0.08);
+            margin-bottom: 1rem;
+        }
+        .score-hero-title {
+            font-size: 1.05rem;
+            font-weight: 750;
+            color: #334155;
+            margin-bottom: 0.35rem;
+        }
+        .score-hero-number {
+            font-size: 3rem;
+            line-height: 1;
+            font-weight: 850;
+            color: #111827;
+            letter-spacing: -0.05em;
+        }
+        .score-hero-subtitle {
+            color: #64748b;
+            font-size: 0.95rem;
+            margin-top: 0.35rem;
+        }
+        .score-card {
+            padding: 1rem 1rem 0.9rem 1rem;
+            border-radius: 20px;
+            background: #ffffff;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+            min-height: 150px;
+            margin-bottom: 0.9rem;
+        }
+        .score-card-top {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+        .score-card-title {
+            font-size: 1rem;
+            font-weight: 750;
+            color: #1f2937;
+        }
+        .score-card-help {
+            font-size: 0.82rem;
+            color: #64748b;
+            margin-top: 0.2rem;
+        }
+        .score-pill {
+            padding: 0.25rem 0.65rem;
+            border-radius: 999px;
+            color: #ffffff;
+            font-size: 0.78rem;
+            font-weight: 750;
+            white-space: nowrap;
+        }
+        .score-value-row {
+            display: flex;
+            align-items: baseline;
+            gap: 0.35rem;
+            margin-top: 0.9rem;
+            margin-bottom: 0.55rem;
+        }
+        .score-value {
+            font-size: 1.65rem;
+            font-weight: 850;
+            color: #111827;
+            letter-spacing: -0.03em;
+        }
+        .score-scale {
+            color: #94a3b8;
+            font-size: 0.9rem;
+            font-weight: 650;
+        }
+        .score-track {
+            height: 0.72rem;
+            width: 100%;
+            overflow: hidden;
+            border-radius: 999px;
+            background: #e5e7eb;
+        }
+        .score-fill {
+            height: 100%;
+            border-radius: 999px;
+        }
+        .score-note {
+            color: #64748b;
+            font-size: 0.9rem;
+            margin-top: 0.8rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def metric_card(title, score, category, help_text, icon="🎵"):
+    """Render one visual scorecard tile."""
+    score = clamp_score(score)
+    percent = int(round(score * 100))
+    color = get_score_color(score)
+    st.markdown(
+        f"""
+        <div class="score-card">
+            <div class="score-card-top">
+                <div>
+                    <div class="score-card-title">{icon} {title}</div>
+                    <div class="score-card-help">{help_text}</div>
+                </div>
+                <div class="score-pill" style="background:{color};">{category}</div>
+            </div>
+            <div class="score-value-row">
+                <div class="score-value">{percent}</div>
+                <div class="score-scale">/100</div>
+            </div>
+            <div class="score-track">
+                <div class="score-fill" style="width:{percent}%; background:{color};"></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # Page: RESULTS - Scorecard Display
 def page_results():
     st.title("🎵 MelodyLab")
@@ -174,6 +325,13 @@ def page_results():
     
     melody = st.session_state.generated_melody
     results = st.session_state.scorecard_results
+
+    if melody is None or results is None:
+        st.warning("No melody analysis is available yet. Generate a melody first.")
+        if st.button("Back to Generate", use_container_width=True):
+            st.session_state.page = "generate"
+            st.rerun()
+        return
     
     # Display melody sequence
     st.write("### Generated Melody")
@@ -195,49 +353,77 @@ def page_results():
     rhythm = results["rhythmic_variety"]
     overall = results["final_score"]
     
-    # Create scorecard display
-    scorecard_lines = []
-    scorecard_lines.append("┌─────────────────────────────────────┐")
-    scorecard_lines.append("│ Melody Scorecard                    │")
-    scorecard_lines.append("│                                     │")
-    
-    # Smoothness
-    bar = create_bar(smoothness)
-    category = get_category(smoothness, "standard")
-    scorecard_lines.append(f"│ Smoothness      {bar} {category:>8} │")
-    
-    # Jumps
-    bar = create_bar(jumps)
-    category = get_category(jumps, "standard")
-    scorecard_lines.append(f"│ Jumps           {bar} {category:>8} │")
-    
-    # Patterns
-    bar = create_bar(patterns)
-    category = get_category(patterns, "standard")
-    scorecard_lines.append(f"│ Patterns        {bar} {category:>8} │")
-    
-    # Ending
-    bar = create_bar(ending)
-    category = get_category(ending, "ending")
-    scorecard_lines.append(f"│ Ending                  {category:>15} │")
-    
-    # Beat Variety
-    bar = create_bar(rhythm)
-    category = get_category(rhythm, "rhythm")
-    scorecard_lines.append(f"│ Beat Variety    {bar} {category:>8} │")
-    
-    scorecard_lines.append("│                                     │")
-    
-    # Overall Score
-    overall_percent = int(overall * 100)
-    scorecard_lines.append(f"│ Overall Score           {overall_percent:>3}/100        │")
-    scorecard_lines.append("│                                     │")
-    scorecard_lines.append("└─────────────────────────────────────┘")
-    
-    # Display scorecard in monospace
-    scorecard_text = "\n".join(scorecard_lines)
-    st.code(scorecard_text, language="")
-    
+    # Polished visual scorecard display
+    inject_scorecard_css()
+
+    overall_percent = int(round(clamp_score(overall) * 100))
+    overall_category = get_category(overall, "standard")
+    st.markdown(
+        f"""
+        <div class="score-hero">
+            <div class="score-hero-title">✨ Overall musicality</div>
+            <div class="score-hero-number">{overall_percent}/100</div>
+            <div class="score-hero-subtitle">
+                Based on smoothness, melodic jumps, recurring patterns, ending resolution, and rhythmic variety.
+                Current level: <b>{overall_category}</b>.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    row1_col1, row1_col2, row1_col3 = st.columns(3)
+    with row1_col1:
+        metric_card(
+            "Smoothness",
+            smoothness,
+            get_category(smoothness, "standard"),
+            "How connected the note-to-note movement feels.",
+            "🌊",
+        )
+    with row1_col2:
+        metric_card(
+            "Jumps",
+            jumps,
+            get_category(jumps, "standard"),
+            "How much the melody uses larger leaps.",
+            "🦘",
+        )
+    with row1_col3:
+        metric_card(
+            "Patterns",
+            patterns,
+            get_category(patterns, "standard"),
+            "How strongly motifs or repeated ideas appear.",
+            "🔁",
+        )
+
+    row2_col1, row2_col2 = st.columns(2)
+    with row2_col1:
+        metric_card(
+            "Ending",
+            ending,
+            get_category(ending, "ending"),
+            "Whether the melody resolves on the inferred tonic.",
+            "🏁",
+        )
+    with row2_col2:
+        metric_card(
+            "Beat Variety",
+            rhythm,
+            get_category(rhythm, "rhythm"),
+            "Balance between rhythmic variety and repeated beat patterns.",
+            "🥁",
+        )
+
+    with st.expander("What do these scores mean?"):
+        st.write(
+            "Smoothness rewards mostly stepwise motion. Jumps is the inverse of smoothness, "
+            "so a high jump score means the melody contains more large leaps. Patterns measures "
+            "motif repetition. Ending checks whether the final note resolves on the inferred tonic. "
+            "Beat Variety combines rhythmic diversity with rhythmic patterning."
+        )
+
     st.divider()
     
     # Action buttons
