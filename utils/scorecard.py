@@ -118,38 +118,30 @@ def normalize_base_name(pitch):
     return s[:i]
 
 
-def infer_tonic_from_last8(pitches):
-    """
-    Infer tonic heuristically from pitch-class counts in the final 8 notes.
-    Limited to G major and D major based on pitch patterns.
-    """
-    if not pitches:
-        return None
-    
-    last8 = pitches[-8:]
-    base_counts = Counter(normalize_base_name(p) for p in last8 if not is_rest(p))
-    
-    # D major heuristic: C#, D, A or F#
-    cond_csharp = base_counts.get("C#", 0) >= 2
-    cond_d = base_counts.get("D", 0) >= 2
-    cond_a_or_fsharp = (base_counts.get("A", 0) >= 1) or (base_counts.get("F#", 0) >= 1)
-    
-    return "D" if (cond_csharp and cond_d and cond_a_or_fsharp) else "G"
-
-
-def ending_on_tonic(seq):
-    """Check if melody ends on the inferred tonic."""
+def ending_on_home_note(seq, home_note="G"):
+    """Check if melody ends on the expected home note."""
     pitches = pitch_stream(seq)
     non_rest_pitches = [p for p in pitches if not is_rest(p)]
-    
+
     if not non_rest_pitches:
-        return 0.0, {"tonic": None, "final_note": None}
-    
-    tonic = infer_tonic_from_last8(pitches)
+        return 0.0, {"home_note": home_note, "final_note": None}
+
     final_note = normalize_base_name(non_rest_pitches[-1])
-    score = 1.0 if final_note == tonic else 0.0
-    
-    return score, {"tonic": tonic, "final_note": non_rest_pitches[-1]}
+    score = 1.0 if final_note == home_note else 0.0
+
+    return score, {
+        "home_note": home_note,
+        "final_note": non_rest_pitches[-1],
+    }
+
+
+def ending_on_tonic(seq, home_note="G"):
+    """
+    Backward-compatible name for the old scorecard key.
+    Internally, this now checks the selected training melody's home note
+    instead of trying to infer a Western tonic.
+    """
+    return ending_on_home_note(seq, home_note)
 
 
 def _nontrivial_pattern(values):
@@ -265,17 +257,104 @@ def interval_motif_score(intervals):
     }
 
 
-def motif_repetition(seq, intervals):
-    """Overall motif repetition: (pitch_score + interval_score) / 2."""
-    pitch_score, pitch_details = pitch_motif_score(seq)
-    interval_score, interval_details = interval_motif_score(intervals)
-    score = 0.5 * (pitch_score + interval_score)
-    
-    return score, {
-        "pitch_score": pitch_score,
-        "interval_score": interval_score,
+def pitch_loop_dominance_penalty(seq, lengths=MOTIF_LENGTHS):
+    """
+    Penalize exact short pitch loops that dominate the melody.
+
+    This is intentionally pitch-based only. Interval loops are not penalized,
+    because repeated contour/motion can be musically valid even when the exact
+    notes are changing.
+
+    Returns:
+        penalty: float in [0, 0.35]
+        details: metadata showing the strongest detected loop for each length
+    """
+    pitches = [p for p in pitch_stream(seq) if not is_rest(p)]
+    n = len(pitches)
+
+    if n < 4:
+        return 0.0, {
+            "reason": "too_few_pitches",
+            "checked_lengths": list(lengths),
+        }
+
+    penalty = 0.0
+    details = {
+        "checked_lengths": list(lengths),
+        "loops": {},
     }
 
+    for L in lengths:
+        # Need at least two full chunks of length L to call something a loop.
+        if n < 2 * L:
+            continue
+
+        # Non-overlapping chunks catch obvious loops like AB AB AB AB.
+        chunks = [
+            tuple(pitches[i : i + L])
+            for i in range(0, n - L + 1, L)
+            if len(pitches[i : i + L]) == L
+        ]
+
+        # Also check offset chunks, so B A B A is caught inside A B A B A...
+        offset_chunks = [
+            tuple(pitches[i : i + L])
+            for i in range(1, n - L + 1, L)
+            if len(pitches[i : i + L]) == L
+        ]
+
+        candidates = chunks + offset_chunks
+        candidates = [chunk for chunk in candidates if _nontrivial_pattern(chunk)]
+
+        if not candidates:
+            continue
+
+        counts = Counter(candidates)
+        strongest_loop, strongest_count = counts.most_common(1)[0]
+        dominance = strongest_count / len(candidates)
+
+        details["loops"][f"L{L}"] = {
+            "loop": strongest_loop,
+            "count": strongest_count,
+            "total_checked": len(candidates),
+            "dominance": dominance,
+        }
+
+        # Keep this moderate: it reduces motif credit but does not crush the
+        # whole melody score.
+        if dominance >= 0.70:
+            penalty += 0.20
+        elif dominance >= 0.50:
+            penalty += 0.10
+
+    return min(penalty, 0.35), details
+
+
+def motif_repetition(seq, intervals):
+    """
+    Overall motif repetition with pitch-loop dominance filtering.
+
+    Pitch motifs and interval motifs are still averaged equally. However,
+    the pitch-loop penalty is applied only to the pitch motif score, not to
+    the whole motif score. This keeps interval motif structure unchanged.
+    """
+    pitch_score, pitch_details = pitch_motif_score(seq)
+    interval_score, interval_details = interval_motif_score(intervals)
+
+    pitch_loop_penalty, loop_details = pitch_loop_dominance_penalty(seq)
+    adjusted_pitch_score = max(0.0, pitch_score - pitch_loop_penalty)
+
+    score = 0.5 * (adjusted_pitch_score + interval_score)
+
+    return score, {
+        "pitch_score": pitch_score,
+        "adjusted_pitch_score": adjusted_pitch_score,
+        "pitch_loop_penalty": pitch_loop_penalty,
+        "interval_score": interval_score,
+        "pitch_details": pitch_details,
+        "interval_details": interval_details,
+        "loop_details": loop_details,
+    }
 
 def infer_duration_vocab_size(melodies_list):
     """Infer D_max from all distinct duration values in melodies."""
@@ -330,7 +409,7 @@ def rhythmic_variety(durations, d_max):
     }
 
 
-def evaluate_sequence(melody, d_max):
+def evaluate_sequence(melody, d_max, home_note="G"):
     """
     Compute all evaluation metrics for a melody.
     Returns a dictionary with all scores and metadata.
@@ -340,7 +419,7 @@ def evaluate_sequence(melody, d_max):
     intervals = intervals_from_midi(midi_seq)
     durations = durations_numeric(seq)
     
-    end_score, end_meta = ending_on_tonic(seq)
+    end_score, end_meta = ending_on_home_note(seq, home_note)
     smooth_score, smooth_meta = interval_smoothness(intervals)
     step_score, step_meta = stepwise_motion(intervals)
     motif_score, motif_meta = motif_repetition(seq, intervals)
