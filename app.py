@@ -30,6 +30,10 @@ if "learning_step" not in st.session_state:
     st.session_state.learning_step = 0
 if "rule_mode" not in st.session_state:
     st.session_state.rule_mode = None
+if "play_learning_note" not in st.session_state:
+    st.session_state.play_learning_note = False
+if "melody_length" not in st.session_state:
+    st.session_state.melody_length = 16
 
 # Home-note settings for the scorecard.
 # These are used instead of automatic Western key detection, so Sakura Sakura
@@ -54,6 +58,8 @@ MELODY_ICONS = {
     "raga": "🪷",
     "indian": "🪷",
 }
+
+ALLOWED_MELODY_LENGTHS = [8, 12, 16, 20, 24, 28, 32]
 
 
 def get_training_melody_icon(melody_key, melody_data):
@@ -479,13 +485,25 @@ def page_generate():
     render_page_header("Generate melody", "Review your setup, then create a 16-note melody from the selected model.")
 
     melody_display = TRAINING_MELODIES[st.session_state.selected_melody]["name"]
+
+    if st.session_state.melody_length not in ALLOWED_MELODY_LENGTHS:
+        st.session_state.melody_length = 16
+
+    melody_length = st.select_slider(
+        "Melody length",
+        options=ALLOWED_MELODY_LENGTHS,
+        value=st.session_state.melody_length,
+        help="Choose how many notes the model should generate. 16 is the default.",
+    )
+    st.session_state.melody_length = melody_length
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown(f'<div class="ml-setup-card"><div class="ml-setup-label">Model</div><div class="ml-setup-value">{get_model_display_name(st.session_state.selected_model)}</div></div>', unsafe_allow_html=True)
     with col2:
         st.markdown(f'<div class="ml-setup-card"><div class="ml-setup-label">Training Melody</div><div class="ml-setup-value">{melody_display}</div></div>', unsafe_allow_html=True)
     with col3:
-        st.markdown('<div class="ml-setup-card"><div class="ml-setup-label">Length</div><div class="ml-setup-value">16 notes</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="ml-setup-card"><div class="ml-setup-label">Length</div><div class="ml-setup-value">{st.session_state.melody_length} notes</div></div>', unsafe_allow_html=True)
 
     if st.session_state.selected_model == "RuleBased":
         st.markdown(
@@ -524,9 +542,10 @@ def page_generate():
     
     # Generate Melody Button
     if st.button("✨ Generate Melody →", use_container_width=True, key="btn_generate", type="primary"):
-        melody = st.session_state.model_instance.generate_melody(length=16)
+        melody = st.session_state.model_instance.generate_melody(length=st.session_state.melody_length)
         st.session_state.generated_melody = melody
         st.session_state.learning_step = 0
+        st.session_state.play_learning_note = False
         
         # Evaluate melody with scorecard
         selected_melody_data = TRAINING_MELODIES[st.session_state.selected_melody]
@@ -880,6 +899,27 @@ def render_play_melody_button(audio_bytes):
         </script>
         """,
         height=90,
+    )
+
+
+def autoplay_single_note(pitch, duration, tempo=120):
+    """
+    Autoplay the currently revealed note in Learning Mode.
+
+    This is triggered after the user clicks Think Next Note and Streamlit reruns
+    the page. Browser autoplay rules can still vary, but because the rerun follows
+    a user click, this usually works without needing a separate play button.
+    """
+    audio_bytes = melody_to_wav([(pitch, duration)], tempo=tempo)
+    audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+    components.html(
+        f"""
+        <audio autoplay>
+            <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
+        </audio>
+        """,
+        height=0,
     )
 
 
@@ -1280,6 +1320,10 @@ def page_learning():
     selected_pitch = generated_pitches[step]
     selected_duration = generated_durations[step]
 
+    if st.session_state.play_learning_note:
+        autoplay_single_note(selected_pitch, selected_duration, tempo=120)
+        st.session_state.play_learning_note = False
+
     info = get_learning_step_info(
         st.session_state.selected_model,
         model_instance,
@@ -1362,18 +1406,21 @@ def page_learning():
 
     with col1:
         if st.button("← Back to Results", use_container_width=True):
+            st.session_state.play_learning_note = False
             st.session_state.page = "results"
             st.rerun()
 
     with col2:
         if st.button("Restart Replay", use_container_width=True):
             st.session_state.learning_step = 0
+            st.session_state.play_learning_note = False
             st.rerun()
 
     with col3:
         if step < total_notes - 1:
             if st.button("Think Next Note →", use_container_width=True):
                 st.session_state.learning_step += 1
+                st.session_state.play_learning_note = True
                 st.rerun()
         else:
             st.success("Full melody composed!")
@@ -1514,6 +1561,7 @@ def page_results():
     with col2:
         if st.button("🎼 Watch How It Was Composed", use_container_width=True, type="primary"):
             st.session_state.learning_step = 0
+            st.session_state.play_learning_note = False
             st.session_state.page = "learning"
             st.rerun()
     
