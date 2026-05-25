@@ -322,12 +322,14 @@ def pitch_loop_dominance_penalty(seq, lengths=MOTIF_LENGTHS):
 
         # Keep this moderate: it reduces motif credit but does not crush the
         # whole melody score.
-        if dominance >= 0.70:
-            penalty += 0.20
+        if dominance >= 0.80:
+            penalty += 0.45
+        elif dominance >= 0.65:
+            penalty += 0.30
         elif dominance >= 0.50:
-            penalty += 0.10
+            penalty += 0.18
 
-    return min(penalty, 0.35), details
+    return min(penalty, 0.50), details
 
 
 def motif_repetition(seq, intervals):

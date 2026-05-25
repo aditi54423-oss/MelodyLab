@@ -419,10 +419,6 @@ def page_rule_mode():
             st.session_state.page = "training_melody"
             st.rerun()
 
-    st.info(
-        "For the rule-based model, the selected training melody sets the pitch-class pool and home note. "
-        "It does not train transition probabilities."
-    )
     st.divider()
     if st.button("← Back to model selection", use_container_width=True):
         st.session_state.page = "home"
@@ -1444,6 +1440,12 @@ def page_results():
         """,
         unsafe_allow_html=True,
     )
+    st.info(
+    "Note: a high score means the melody matches several features the scorecard checks, "
+    "such as smooth movement, recurring patterns, rhythmic variety, and ending on the home note. "
+    "It does not always mean the melody will sound the most musical to a listener. "
+    "A melody can follow the rules well but still feel repetitive, which shows why listening matters alongside the math."
+)
 
     row1_col1, row1_col2, row1_col3 = st.columns(3)
     with row1_col1:
