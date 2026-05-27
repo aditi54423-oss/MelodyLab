@@ -59,7 +59,8 @@ MELODY_ICONS = {
     "indian": "🪷",
 }
 
-ALLOWED_MELODY_LENGTHS = [8, 12, 16, 20, 24, 28, 32]
+MIN_MELODY_LENGTH = 8
+MAX_MELODY_LENGTH = 32
 
 
 def get_training_melody_icon(melody_key, melody_data):
@@ -482,18 +483,22 @@ def page_training_melody():
 # Page: GENERATE Melody
 def page_generate():
     inject_global_ui_css()
-    render_page_header("Generate melody", "Review your setup, then create a 16-note melody from the selected model.")
+    render_page_header("Generate melody", "Review your setup, then create a melody from the selected model.")
 
     melody_display = TRAINING_MELODIES[st.session_state.selected_melody]["name"]
 
-    if st.session_state.melody_length not in ALLOWED_MELODY_LENGTHS:
-        st.session_state.melody_length = 16
+    st.session_state.melody_length = max(
+        MIN_MELODY_LENGTH,
+        min(MAX_MELODY_LENGTH, int(st.session_state.melody_length)),
+    )
 
-    melody_length = st.select_slider(
+    melody_length = st.slider(
         "Melody length",
-        options=ALLOWED_MELODY_LENGTHS,
+        min_value=MIN_MELODY_LENGTH,
+        max_value=MAX_MELODY_LENGTH,
         value=st.session_state.melody_length,
-        help="Choose how many notes the model should generate. 16 is the default.",
+        step=1,
+        help="Choose how many notes the model should generate.",
     )
     st.session_state.melody_length = melody_length
 
