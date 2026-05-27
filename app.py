@@ -1,125 +1,32 @@
 import streamlit as st
-import base64
-from pathlib import Path
-from PIL import Image
 import numpy as np
 import io
 import wave
+import base64
+from pathlib import Path
 import streamlit.components.v1 as components
 from utils.melodies import TRAINING_MELODIES
 from utils.scorecard import evaluate_sequence, infer_duration_vocab_size
 from models.random_model import RandomMelodyGenerator
 from models.markov1 import FirstOrderMarkovGenerator
 from models.markov2 import SecondOrderMarkovGenerator
+from models.rule_based_basic import RuleBasedMelodyGenerator
 
 APP_DIR = Path(__file__).resolve().parent
-LOGO_PATH = APP_DIR / "melodylab_logo.png"
+LOGO_FILE = APP_DIR / "melodylab_logo.png"
+FAVICON_FILE = APP_DIR / "melodylab_favicon.png"
 
-
-def load_page_icon():
-    """Use the MelodyLab logo as the browser-tab favicon."""
-    if LOGO_PATH.exists():
-        return Image.open(LOGO_PATH)
-    return "🎵"
-
+if not LOGO_FILE.exists():
+    LOGO_FILE = Path("C:/Users/Poonam-hp/Documents/GitHub/MelodyLab/melodylab_logo.png")
+if not FAVICON_FILE.exists():
+    FAVICON_FILE = Path("C:/Users/Poonam-hp/Documents/GitHub/MelodyLab/melodylab_favicon.png")
 
 st.set_page_config(
     page_title="MelodyLab",
-    page_icon=load_page_icon(),
+    page_icon=FAVICON_FILE if FAVICON_FILE.exists() else LOGO_FILE if LOGO_FILE.exists() else None,
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-
-
-def get_logo_data_uri():
-    """Return the logo as a base64 data URI so the header works after deployment."""
-    if not LOGO_PATH.exists():
-        return None
-    logo_base64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("utf-8")
-    return f"data:image/png;base64,{logo_base64}"
-
-
-def inject_brand_css():
-    """Keep the MelodyLab logo/header consistent across pages."""
-    st.markdown(
-        """
-        <style>
-        .melodylab-header {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            padding: 0.3rem 0 1.1rem 0;
-        }
-        .melodylab-logo {
-            width: 76px;
-            height: 76px;
-            border-radius: 20px;
-            object-fit: cover;
-            box-shadow: 0 12px 30px rgba(124, 58, 237, 0.22);
-        }
-        .melodylab-wordmark {
-            font-size: 2.75rem;
-            line-height: 1;
-            font-weight: 850;
-            letter-spacing: -0.055em;
-            color: #111827;
-            margin: 0;
-        }
-        .melodylab-subtitle {
-            font-size: 1.18rem;
-            font-weight: 700;
-            color: #5b21b6;
-            margin-top: 0.45rem;
-        }
-        .melodylab-description {
-            color: #64748b;
-            font-size: 1rem;
-            margin-top: 0.25rem;
-        }
-        @media (max-width: 640px) {
-            .melodylab-header {
-                align-items: flex-start;
-            }
-            .melodylab-logo {
-                width: 62px;
-                height: 62px;
-                border-radius: 16px;
-            }
-            .melodylab-wordmark {
-                font-size: 2.1rem;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_app_header(subtitle=None, description=None):
-    """Render the MelodyLab logo where the old title/emoji header used to be."""
-    inject_brand_css()
-    logo_uri = get_logo_data_uri()
-
-    logo_html = ""
-    if logo_uri:
-        logo_html = f'<img src="{logo_uri}" class="melodylab-logo" alt="MelodyLab logo">'
-
-    subtitle_html = f'<div class="melodylab-subtitle">{subtitle}</div>' if subtitle else ""
-    description_html = f'<div class="melodylab-description">{description}</div>' if description else ""
-
-    st.markdown(
-        f"""
-        <div class="melodylab-header">
-            {logo_html}
-            <div>
-                <div class="melodylab-wordmark">MelodyLab</div>
-                {subtitle_html}
-                {description_html}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 # Initialize session state
 if "page" not in st.session_state:
@@ -136,6 +43,12 @@ if "scorecard_results" not in st.session_state:
     st.session_state.scorecard_results = None
 if "learning_step" not in st.session_state:
     st.session_state.learning_step = 0
+if "rule_mode" not in st.session_state:
+    st.session_state.rule_mode = None
+if "play_learning_note" not in st.session_state:
+    st.session_state.play_learning_note = False
+if "melody_length" not in st.session_state:
+    st.session_state.melody_length = 16
 
 # Home-note settings for the scorecard.
 # These are used instead of automatic Western key detection, so Sakura Sakura
@@ -148,6 +61,41 @@ DEFAULT_HOME_NOTES = {
     "sakura_sakura": "A",
     "sakura sakura": "A",
 }
+
+
+MELODY_ICONS = {
+    "minuet": "🎻",
+    "amazing_grace": "🎺",
+    "amazing grace": "🎺",
+    "sakura": "🌸",
+    "sakura_sakura": "🌸",
+    "sakura sakura": "🌸",
+    "raga": "🪷",
+    "indian": "🪷",
+}
+
+MIN_MELODY_LENGTH = 8
+MAX_MELODY_LENGTH = 32
+
+
+def get_logo_markup():
+    """Return the uploaded MelodyLab logo image, with a text fallback."""
+    if LOGO_FILE.exists():
+        logo_data = base64.b64encode(LOGO_FILE.read_bytes()).decode("utf-8")
+        return f'<img class="ml-logo-img" src="data:image/png;base64,{logo_data}" alt="MelodyLab logo" />'
+    return '<div class="ml-logo">ML</div>'
+
+
+def get_training_melody_icon(melody_key, melody_data):
+    """Return a small visual marker for each training melody card."""
+    key_text = str(melody_key).lower().strip()
+    name_text = str(melody_data.get("name", "")).lower().strip()
+
+    for label, icon in MELODY_ICONS.items():
+        if label in key_text or label in name_text:
+            return icon
+
+    return "🎵"
 
 
 def get_training_home_note(melody_key, melody_data):
@@ -170,77 +118,435 @@ def get_training_home_note(melody_key, melody_data):
 
     return "G"
 
+
+# -----------------------------
+# Shared UI polish
+# -----------------------------
+def inject_global_ui_css():
+    """Global MelodyLab styling for pages, cards, and Streamlit buttons."""
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2.5rem;
+            max-width: 1180px;
+        }
+        [data-testid="stAppViewContainer"] {
+            background:
+                radial-gradient(circle at top left, rgba(124, 58, 237, 0.10), transparent 30%),
+                radial-gradient(circle at top right, rgba(37, 99, 235, 0.10), transparent 28%),
+                linear-gradient(180deg, #fbfdff 0%, #f8fafc 100%);
+        }
+        .ml-hero {
+            position: relative;
+            overflow: hidden;
+            padding: 2rem 2.1rem;
+            border-radius: 30px;
+            background: linear-gradient(135deg, #111827 0%, #312e81 52%, #7c3aed 100%);
+            color: #ffffff;
+            box-shadow: 0 24px 60px rgba(49, 46, 129, 0.26);
+            margin-bottom: 1.3rem;
+        }
+        .ml-hero:after {
+            content: "";
+            position: absolute;
+            width: 260px;
+            height: 260px;
+            right: -90px;
+            top: -100px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.14);
+        }
+        .ml-brand-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            position: relative;
+            z-index: 1;
+        }
+        .ml-logo {
+            width: 76px;
+            height: 76px;
+            border-radius: 24px;
+            background: linear-gradient(135deg, #fef3c7, #f9a8d4 45%, #93c5fd);
+            display: grid;
+            place-items: center;
+            color: #111827;
+            font-weight: 950;
+            font-size: 1.35rem;
+            letter-spacing: -0.08em;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.55), 0 16px 34px rgba(0,0,0,0.25);
+        }
+        .ml-logo-img {
+            width: 76px;
+            height: 76px;
+            border-radius: 26px;
+            object-fit: cover;
+            box-shadow: 0 16px 34px rgba(0,0,0,0.25);
+            display: block;
+        }
+        .ml-title {
+            font-size: clamp(2.5rem, 5vw, 4.9rem);
+            line-height: 0.95;
+            font-weight: 950;
+            letter-spacing: -0.075em;
+            margin: 0;
+        }
+        .ml-kicker {
+            text-transform: uppercase;
+            letter-spacing: 0.18em;
+            font-size: 0.76rem;
+            font-weight: 850;
+            color: #c4b5fd;
+            margin-bottom: 0.35rem;
+        }
+        .ml-subheading {
+            position: relative;
+            z-index: 1;
+            font-size: 1.45rem;
+            font-weight: 800;
+            margin-top: 1.2rem;
+            margin-bottom: 0.35rem;
+        }
+        .ml-subsubheading {
+            position: relative;
+            z-index: 1;
+            max-width: 720px;
+            color: #dbeafe;
+            font-size: 1.02rem;
+            line-height: 1.55;
+        }
+        .ml-section-title {
+            font-size: 1.35rem;
+            font-weight: 900;
+            letter-spacing: -0.03em;
+            color: #111827;
+            margin: 0.75rem 0 0.5rem;
+        }
+        .ml-card {
+            padding: 1.15rem 1.2rem;
+            border-radius: 24px;
+            background: rgba(255, 255, 255, 0.88);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
+            margin-bottom: 0.8rem;
+        }
+        .ml-card-title {
+            font-size: 1.05rem;
+            font-weight: 900;
+            color: #111827;
+            margin-bottom: 0.2rem;
+        }
+        .ml-card-personality {
+            display: inline-block;
+            padding: 0.24rem 0.62rem;
+            border-radius: 999px;
+            background: #ede9fe;
+            color: #5b21b6;
+            font-size: 0.78rem;
+            font-weight: 850;
+            margin: 0.2rem 0 0.55rem 0;
+        }
+        .ml-card-text {
+            color: #475569;
+            font-size: 0.95rem;
+            line-height: 1.4;
+        }
+        .ml-selected-pill {
+            display: inline-block;
+            padding: 0.48rem 0.85rem;
+            border-radius: 999px;
+            background: #eef2ff;
+            color: #3730a3;
+            font-weight: 850;
+            border: 1px solid rgba(99, 102, 241, 0.20);
+        }
+        .ml-setup-card {
+            padding: 1.1rem 1.2rem;
+            border-radius: 22px;
+            background: #ffffff;
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.07);
+        }
+        .ml-setup-label {
+            color: #64748b;
+            font-size: 0.82rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .ml-setup-value {
+            color: #111827;
+            font-size: 1.12rem;
+            font-weight: 900;
+            margin-top: 0.25rem;
+        }
+        div.stButton > button {
+            min-height: 3.2rem;
+            border-radius: 16px;
+            border: 1px solid rgba(99, 102, 241, 0.22);
+            background: #ffffff;
+            color: #1f2937;
+            font-weight: 900;
+            letter-spacing: -0.01em;
+            box-shadow: 0 10px 22px rgba(15, 23, 42, 0.07);
+            transition: all 0.16s ease;
+        }
+        div.stButton > button:hover {
+            transform: translateY(-2px);
+            border-color: rgba(124, 58, 237, 0.45);
+            box-shadow: 0 16px 30px rgba(79, 70, 229, 0.16);
+        }
+        div.stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            color: white;
+            border: 0;
+            min-height: 3.9rem;
+            font-size: 1.12rem;
+            font-weight: 950;
+            box-shadow: 0 18px 38px rgba(79, 70, 229, 0.25);
+        }
+        div[data-testid="stExpander"] {
+            border-radius: 18px;
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+            background: #ffffff;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_brand_hero():
+    """Render the MelodyLab landing header with a custom logo-style mark."""
+    logo_markup = get_logo_markup()
+    st.markdown(
+        f"""
+        <div class="ml-hero">
+            <div class="ml-brand-row">
+                {logo_markup}
+                <div>
+                    <div class="ml-kicker">melody generator lab</div>
+                    <h1 class="ml-title">MelodyLab</h1>
+                </div>
+            </div>
+            <div class="ml-subheading">Can math make music?</div>
+            <div class="ml-subsubheading">
+                Choose a model, train it on a melody, generate a new tune, listen to it, then inspect how every note was chosen.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+MODEL_UI = {
+    "Random": {
+        "name": "Random",
+        "personality": "The Dice Roller",
+        "meaning": "Chooses notes by chance from the selected melody’s note pool.",
+        "button": "Choose Random",
+    },
+    "Markov1": {
+        "name": "First-Order Markov",
+        "personality": "The One-Note Listener",
+        "meaning": "Looks at the previous note before choosing what comes next.",
+        "button": "Choose First-Order Markov",
+    },
+    "Markov2": {
+        "name": "Second-Order Markov",
+        "personality": "The Pattern Imitator",
+        "meaning": "Looks at the previous two notes, so it can imitate short patterns.",
+        "button": "Choose Second-Order Markov",
+    },
+    "RuleBased": {
+        "name": "Rule-Based",
+        "personality": "The Music Theory Student",
+        "meaning": "Follows encoded music-theory rules instead of transition probabilities.",
+        "button": "Choose Rule-Based",
+    },
+}
+
+
+def get_model_display_name(model_name):
+    info = MODEL_UI.get(model_name)
+    if not info:
+        return str(model_name)
+    return f'{info["name"]} ({info["personality"]})'
+
+
+def render_page_header(title, subtitle=""):
+    st.markdown(f'<div class="ml-section-title">{title}</div>', unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f'<div class="ml-card-text" style="margin-bottom:1rem;">{subtitle}</div>', unsafe_allow_html=True)
+
 # Page: HOME - Model Selection
 def page_home():
-    render_app_header(
-        subtitle="Can Math Make Music?",
-        description="Try generating a melody with different models.",
+    inject_global_ui_css()
+    render_brand_hero()
+    render_page_header("Choose a model", "Each model has a different composing personality. Start with one and compare the results later.")
+
+    cols = st.columns(4)
+    model_keys = ["Random", "RuleBased", "Markov1", "Markov2"]
+    for col, model_key in zip(cols, model_keys):
+        info = MODEL_UI[model_key]
+        with col:
+            st.markdown(
+                f"""
+                <div class="ml-card">
+                    <div class="ml-card-title">{info['name']}</div>
+                    <div class="ml-card-personality">{info['personality']}</div>
+                    <div class="ml-card-text">{info['meaning']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(info["button"], use_container_width=True, key=f"btn_{model_key}"):
+                st.session_state.selected_model = model_key
+                st.session_state.model_instance = None
+                if model_key == "RuleBased":
+                    st.session_state.page = "rule_mode"
+                else:
+                    st.session_state.page = "training_melody"
+                st.rerun()
+
+# Page: RULE-BASED MODE Selection
+def page_rule_mode():
+    inject_global_ui_css()
+    render_page_header(
+        "Choose rule-based mode",
+        "Strict mode always chooses the highest-scoring rule-approved note. Creative mode chooses from the top few options for more variety.",
+    )
+    st.markdown(
+        f'Selected Model: <span class="ml-selected-pill">{get_model_display_name("RuleBased")}</span>',
+        unsafe_allow_html=True,
     )
     st.divider()
-    
-    col1, col2, col3 = st.columns(3)
-    
+
+    col1, col2 = st.columns(2)
     with col1:
-        if st.button("🎲 Random\n*The Dice Roller*\nChooses notes by chance", use_container_width=True, key="btn_random"):
-            st.session_state.selected_model = "Random"
+        st.markdown(
+            """
+            <div class="ml-card">
+                <div class="ml-card-title">Strict Mode</div>
+                <div class="ml-card-personality">More predictable</div>
+                <div class="ml-card-text">Always chooses the highest-scoring note according to the encoded music-theory rules.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("Choose Strict Mode", use_container_width=True, key="btn_rule_strict"):
+            st.session_state.rule_mode = "strict"
             st.session_state.page = "training_melody"
             st.rerun()
-    
+
     with col2:
-        if st.button("🎵 First-Order Markov\n*The One-Note Listener*\nRemembers the previous note", use_container_width=True, key="btn_markov1"):
-            st.session_state.selected_model = "Markov1"
+        st.markdown(
+            """
+            <div class="ml-card">
+                <div class="ml-card-title">Creative Mode</div>
+                <div class="ml-card-personality">More variety</div>
+                <div class="ml-card-text">Chooses from the top few rule-approved notes, so the output is less repetitive.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("Choose Creative Mode", use_container_width=True, key="btn_rule_creative"):
+            st.session_state.rule_mode = "creative"
             st.session_state.page = "training_melody"
             st.rerun()
-    
-    with col3:
-        if st.button("🎼 Second-Order Markov\n*The Pattern Imitator*\nRemembers the previous two notes", use_container_width=True, key="btn_markov2"):
-            st.session_state.selected_model = "Markov2"
-            st.session_state.page = "training_melody"
-            st.rerun()
+
+    st.divider()
+    if st.button("← Back to model selection", use_container_width=True):
+        st.session_state.page = "home"
+        st.session_state.selected_model = None
+        st.session_state.rule_mode = None
+        st.rerun()
+
 
 # Page: TRAINING MELODY Selection
 def page_training_melody():
-    render_app_header(subtitle="Choose Training Melody")
-    st.write(f"Selected Model: **{st.session_state.selected_model}**")
+    inject_global_ui_css()
+    render_page_header("Choose a training melody", "The selected melody becomes the source material for the model’s note and rhythm choices.")
+    st.markdown(
+        f'Selected Model: <span class="ml-selected-pill">{get_model_display_name(st.session_state.selected_model)}</span>',
+        unsafe_allow_html=True,
+    )
+    if st.session_state.selected_model == "RuleBased":
+        st.markdown(
+            f'Rule-Based Mode: <span class="ml-selected-pill">{(st.session_state.rule_mode or "strict").title()} Mode</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption("For this model, the training melody sets the pitch-class pool and home note.")
     st.divider()
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col2:
-        st.write("### Available Training Melodies")
-        
-        melody_options = {
-         data["name"]: key
-         for key, data in TRAINING_MELODIES.items()
-                                                        }
-        
-        for melody_name, melody_key in melody_options.items():
-            if st.button(melody_name, use_container_width=True, key=f"btn_{melody_key}"):
+
+    melody_options = {data["name"]: key for key, data in TRAINING_MELODIES.items()}
+    cols = st.columns(3)
+
+    for idx, (melody_name, melody_key) in enumerate(melody_options.items()):
+        melody_data = TRAINING_MELODIES[melody_key]
+        note_count = len(melody_data.get("pitches", []))
+        melody_icon = get_training_melody_icon(melody_key, melody_data)
+
+        with cols[idx % 3]:
+            st.markdown(
+                f"""
+                <div class="ml-card">
+                    <div class="ml-card-title">{melody_icon} {melody_name}</div>
+                    <div class="ml-card-text">{note_count} training notes</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(f"Train on {melody_icon} {melody_name}", use_container_width=True, key=f"btn_{melody_key}"):
                 st.session_state.selected_melody = melody_key
+                st.session_state.model_instance = None
                 st.session_state.page = "generate"
                 st.rerun()
-    
+
     st.divider()
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("← Back", use_container_width=True):
-            st.session_state.page = "home"
-            st.session_state.selected_model = None
-            st.rerun()
+    if st.button("← Back to model selection", use_container_width=True):
+        st.session_state.page = "home"
+        st.session_state.selected_model = None
+        st.rerun()
 
 # Page: GENERATE Melody
 def page_generate():
-    render_app_header(subtitle="Generate Melody")
-    
+    inject_global_ui_css()
+    render_page_header("Generate melody", "Review your setup, then create a melody from the selected model.")
+
+    melody_display = TRAINING_MELODIES[st.session_state.selected_melody]["name"]
+
+    st.session_state.melody_length = max(
+        MIN_MELODY_LENGTH,
+        min(MAX_MELODY_LENGTH, int(st.session_state.melody_length)),
+    )
+
+    melody_length = st.slider(
+        "Melody length",
+        min_value=MIN_MELODY_LENGTH,
+        max_value=MAX_MELODY_LENGTH,
+        value=st.session_state.melody_length,
+        step=1,
+        help="Choose how many notes the model should generate.",
+    )
+    st.session_state.melody_length = melody_length
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Model", st.session_state.selected_model)
+        st.markdown(f'<div class="ml-setup-card"><div class="ml-setup-label">Model</div><div class="ml-setup-value">{get_model_display_name(st.session_state.selected_model)}</div></div>', unsafe_allow_html=True)
     with col2:
-        melody_display = TRAINING_MELODIES[st.session_state.selected_melody]["name"]
-        st.metric("Training Melody", melody_display)
+        st.markdown(f'<div class="ml-setup-card"><div class="ml-setup-label">Training Melody</div><div class="ml-setup-value">{melody_display}</div></div>', unsafe_allow_html=True)
     with col3:
-        st.metric("Length", "16 notes")
+        st.markdown(f'<div class="ml-setup-card"><div class="ml-setup-label">Length</div><div class="ml-setup-value">{st.session_state.melody_length} notes</div></div>', unsafe_allow_html=True)
+
+    if st.session_state.selected_model == "RuleBased":
+        st.markdown(
+            f'<div style="margin-top:0.9rem;"><span class="ml-selected-pill">Rule-Based Mode: {(st.session_state.rule_mode or "strict").title()}</span></div>',
+            unsafe_allow_html=True,
+        )
     
     st.divider()
     
@@ -265,12 +571,18 @@ def page_generate():
                 pitches=pitches,
                 rhythms=rhythms
             )
+        elif st.session_state.selected_model == "RuleBased":
+            st.session_state.model_instance = RuleBasedMelodyGenerator(
+                training_melody_key=st.session_state.selected_melody,
+                mode=st.session_state.rule_mode or "strict"
+            )
     
     # Generate Melody Button
-    if st.button("🎵 Generate Melody", use_container_width=True, key="btn_generate"):
-        melody = st.session_state.model_instance.generate_melody(length=16)
+    if st.button("✨ Generate Melody →", use_container_width=True, key="btn_generate", type="primary"):
+        melody = st.session_state.model_instance.generate_melody(length=st.session_state.melody_length)
         st.session_state.generated_melody = melody
         st.session_state.learning_step = 0
+        st.session_state.play_learning_note = False
         
         # Evaluate melody with scorecard
         selected_melody_data = TRAINING_MELODIES[st.session_state.selected_melody]
@@ -296,6 +608,7 @@ def page_generate():
             st.session_state.generated_melody = None
             st.session_state.scorecard_results = None
             st.session_state.learning_step = 0
+            st.session_state.rule_mode = None
             st.rerun()
 
 # Helper: Generate visual bar
@@ -626,6 +939,27 @@ def render_play_melody_button(audio_bytes):
     )
 
 
+def autoplay_single_note(pitch, duration, tempo=120):
+    """
+    Autoplay the currently revealed note in Learning Mode.
+
+    This is triggered after the user clicks Think Next Note and Streamlit reruns
+    the page. Browser autoplay rules can still vary, but because the rerun follows
+    a user click, this usually works without needing a separate play button.
+    """
+    audio_bytes = melody_to_wav([(pitch, duration)], tempo=tempo)
+    audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+    components.html(
+        f"""
+        <audio autoplay>
+            <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
+        </audio>
+        """,
+        height=0,
+    )
+
+
 # Helper: Learning Mode visuals and explanations
 def inject_learning_css():
     """Style the note-by-note learning mode."""
@@ -742,12 +1076,7 @@ def inject_learning_css():
 
 def get_model_friendly_name(model_name):
     """Return a user-friendly model label."""
-    labels = {
-        "Random": "Random — The Dice Roller",
-        "Markov1": "First-Order Markov — The One-Note Listener",
-        "Markov2": "Second-Order Markov — The Pattern Imitator",
-    }
-    return labels.get(model_name, str(model_name))
+    return get_model_display_name(model_name)
 
 
 def normalize_choices(choices):
@@ -862,6 +1191,61 @@ def get_learning_step_info(model_name, model_instance, generated_pitches, step):
             "fallback": fallback,
         }
 
+    if model_name == "RuleBased":
+        if step == 0:
+            pitch_classes = getattr(model_instance, "pitch_classes", [])
+            style_name = getattr(getattr(model_instance, "settings", {}), "get", lambda k, d=None: d)("display_name", "selected style")
+            return {
+                "memory": f"Starting home note. Style: {style_name}. Pitch pool: {', '.join(pitch_classes)}.",
+                "choices": [],
+                "selected": selected_note,
+                "explanation": f"The rule-based melody starts on {selected_note}, the home note for the selected style.",
+                "fallback": False,
+                "choice_kind": "rule",
+            }
+
+        trace_item = model_instance.get_trace_for_step(step) if hasattr(model_instance, "get_trace_for_step") else None
+
+        if not trace_item:
+            return {
+                "memory": "Rule trace was not stored for this step.",
+                "choices": [],
+                "selected": selected_note,
+                "explanation": "This rule-based step is not available in the saved trace.",
+                "fallback": False,
+                "choice_kind": "rule",
+            }
+
+        candidates = trace_item.get("possible_next_notes", [])
+        if candidates:
+            raw_scores = [float(item.get("score", 0.0)) for item in candidates]
+            min_score = min(raw_scores)
+            max_score = max(raw_scores)
+            span = max(max_score - min_score, 1.0)
+            choices = [
+                (item.get("note"), (float(item.get("score", 0.0)) - min_score) / span, float(item.get("score", 0.0)))
+                for item in candidates
+            ]
+        else:
+            choices = []
+
+        melody_so_far = trace_item.get("melody_so_far", [])
+        pitch_classes = trace_item.get("pitch_classes", getattr(model_instance, "pitch_classes", []))
+        style_name = trace_item.get("style_name", "selected style")
+
+        return {
+            "memory": (
+                f"Melody so far: {' → '.join(melody_so_far) if melody_so_far else 'None yet'}<br>"
+                f"Style: {style_name}<br>"
+                f"Pitch pool: {', '.join(pitch_classes)}"
+            ),
+            "choices": choices,
+            "selected": selected_note,
+            "explanation": trace_item.get("explanation", f"{selected_note} had the best rule-based score for this step."),
+            "fallback": False,
+            "choice_kind": "rule",
+        }
+
     return {
         "memory": "No model explanation available.",
         "choices": [],
@@ -896,13 +1280,16 @@ def render_melody_builder(generated_pitches, step):
     )
 
 
-def render_choice_bars(choices, selected_note):
-    """Render possible next notes as probability bars."""
+def render_choice_bars(choices, selected_note, choice_kind="probability"):
+    """Render possible next notes as probability bars or relative rule-score bars."""
     if not choices:
+        message = "No probability table is needed for this starting step."
+        if choice_kind == "rule":
+            message = "No rule-score table is needed for the starting home note."
         st.markdown(
-            """
+            f"""
             <div class="learning-card-body">
-                No probability table is needed for this starting step.
+                {message}
             </div>
             """,
             unsafe_allow_html=True,
@@ -910,15 +1297,27 @@ def render_choice_bars(choices, selected_note):
         return
 
     rows = []
-    for note, prob in choices:
-        percent = int(round(prob * 100))
+    for choice in choices:
+        if len(choice) == 3:
+            note, value, raw_score = choice
+        else:
+            note, value = choice
+            raw_score = None
+
+        percent = int(round(max(0.0, min(1.0, float(value))) * 100))
         selected_marker = " ✅" if note == selected_note else ""
+
+        if choice_kind == "rule" and raw_score is not None:
+            value_label = f"score {raw_score:g}"
+        else:
+            value_label = f"{percent}%"
+
         rows.append(
             f"""
             <div class="choice-row">
                 <div class="choice-label">
                     <span>{note}{selected_marker}</span>
-                    <span>{percent}%</span>
+                    <span>{value_label}</span>
                 </div>
                 <div class="choice-track">
                     <div class="choice-fill" style="width:{percent}%;"></div>
@@ -932,7 +1331,8 @@ def render_choice_bars(choices, selected_note):
 
 def page_learning():
     """Interactive note-by-note replay of the generated melody."""
-    render_app_header(subtitle="Watch How It Was Composed")
+    inject_global_ui_css()
+    render_page_header("Watch how it was composed", "Step through the generated melody and inspect the model’s memory, choices, and selected note.")
 
     melody = st.session_state.generated_melody
     model_instance = st.session_state.model_instance
@@ -956,6 +1356,10 @@ def page_learning():
 
     selected_pitch = generated_pitches[step]
     selected_duration = generated_durations[step]
+
+    if st.session_state.play_learning_note:
+        autoplay_single_note(selected_pitch, selected_duration, tempo=120)
+        st.session_state.play_learning_note = False
 
     info = get_learning_step_info(
         st.session_state.selected_model,
@@ -1013,7 +1417,7 @@ def page_learning():
             """,
             unsafe_allow_html=True,
         )
-        render_choice_bars(info["choices"], selected_pitch)
+        render_choice_bars(info["choices"], selected_pitch, info.get("choice_kind", "probability"))
         st.markdown("</div>", unsafe_allow_html=True)
 
         fallback_note = ""
@@ -1039,18 +1443,21 @@ def page_learning():
 
     with col1:
         if st.button("← Back to Results", use_container_width=True):
+            st.session_state.play_learning_note = False
             st.session_state.page = "results"
             st.rerun()
 
     with col2:
         if st.button("Restart Replay", use_container_width=True):
             st.session_state.learning_step = 0
+            st.session_state.play_learning_note = False
             st.rerun()
 
     with col3:
         if step < total_notes - 1:
             if st.button("Think Next Note →", use_container_width=True):
                 st.session_state.learning_step += 1
+                st.session_state.play_learning_note = True
                 st.rerun()
         else:
             st.success("Full melody composed!")
@@ -1062,7 +1469,8 @@ def page_learning():
 
 # Page: RESULTS - Scorecard Display
 def page_results():
-    render_app_header(subtitle="Melody Analysis")
+    inject_global_ui_css()
+    render_page_header("Melody analysis", "Listen to the result, inspect the notes, and compare the music-theory scorecard.")
     
     melody = st.session_state.generated_melody
     results = st.session_state.scorecard_results
@@ -1116,6 +1524,12 @@ def page_results():
         """,
         unsafe_allow_html=True,
     )
+    st.info(
+    "Note: a high score means the melody matches several features the scorecard checks, "
+    "such as smooth movement, recurring patterns, rhythmic variety, and ending on the home note. "
+    "It does not always mean the melody will sound the most musical to a listener. "
+    "A melody can follow the rules well but still feel repetitive, which shows why listening matters alongside the math."
+)
 
     row1_col1, row1_col2, row1_col3 = st.columns(3)
     with row1_col1:
@@ -1161,7 +1575,7 @@ def page_results():
             "🥁",
         )
 
-    with st.expander("What do these scores mean?"):
+    with st.expander("What do these scores mean?", expanded=False):
         st.write(
             "Smoothness rewards mostly stepwise motion. Jumps is the inverse of smoothness, "
             "so a high jump score means the melody contains more large leaps. Patterns measures "
@@ -1175,15 +1589,16 @@ def page_results():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🎵 Generate Again", use_container_width=True):
+        if st.button("Generate Again", use_container_width=True):
             st.session_state.page = "generate"
             st.session_state.generated_melody = None
             st.session_state.scorecard_results = None
             st.rerun()
     
     with col2:
-        if st.button("Watch How It Was Composed", use_container_width=True):
+        if st.button("🎼 Watch How It Was Composed", use_container_width=True, type="primary"):
             st.session_state.learning_step = 0
+            st.session_state.play_learning_note = False
             st.session_state.page = "learning"
             st.rerun()
     
@@ -1195,11 +1610,14 @@ def page_results():
             st.session_state.model_instance = None
             st.session_state.generated_melody = None
             st.session_state.scorecard_results = None
+            st.session_state.rule_mode = None
             st.rerun()
 
 # Router
 if st.session_state.page == "home":
     page_home()
+elif st.session_state.page == "rule_mode":
+    page_rule_mode()
 elif st.session_state.page == "training_melody":
     page_training_melody()
 elif st.session_state.page == "generate":
