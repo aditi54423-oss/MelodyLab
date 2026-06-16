@@ -4,13 +4,13 @@ import io
 import wave
 import base64
 from pathlib import Path
-import streamlit.components.v1 as components
 from utils.melodies import TRAINING_MELODIES
 from utils.scorecard import evaluate_sequence, infer_duration_vocab_size
 from models.random_model import RandomMelodyGenerator
 from models.weighted_random import WeightedRandomMelodyGenerator
 from models.markov1 import FirstOrderMarkovGenerator
 from models.markov2 import SecondOrderMarkovGenerator
+from models.variable_markov import VariableMarkovGenerator
 from models.rule_based_basic import RuleBasedMelodyGenerator
 
 APP_DIR = Path(__file__).resolve().parent
@@ -372,6 +372,12 @@ MODEL_UI = {
         "meaning": "Looks at the previous two note events, so it can imitate short patterns.",
         "button": "Choose Second-Order Markov",
     },
+    "VariableMarkov": {
+        "name": "Variable Markov",
+        "personality": "The Flexible Pattern Listener",
+        "meaning": "Tries to use up to five previous note events, then backs off to shorter memories when a pattern is missing or too rare.",
+        "button": "Choose Variable Markov",
+    },
     "RuleBased": {
         "name": "Rule-Based",
         "personality": "The Music Theory Student",
@@ -634,8 +640,8 @@ def page_home():
     render_brand_hero()
     render_page_header("Choose a model", "Each model has a different composing personality. Start with one and compare the results later.")
 
-    cols = st.columns(5)
-    model_keys = ["Random", "WeightedRandom", "RuleBased", "Markov1", "Markov2"]
+    cols = st.columns(6)
+    model_keys = ["Random", "WeightedRandom", "RuleBased", "Markov1", "Markov2", "VariableMarkov"]
     for col, model_key in zip(cols, model_keys):
         info = MODEL_UI[model_key]
         with col:
@@ -736,7 +742,12 @@ def page_training_melody():
         st.caption("For this model, the training melody sets the pitch-class pool and home note.")
     st.divider()
 
-    melody_options = {data["name"]: key for key, data in TRAINING_MELODIES.items()}
+    if st.session_state.selected_model == "VariableMarkov":
+        melody_options = {data["name"]: key for key, data in TRAINING_MELODIES.items() if key == "minuet"}
+        st.caption("For now, Variable Markov only trains on Minuet. Later this can be replaced with the larger MelodyHub dataset.")
+    else:
+        melody_options = {data["name"]: key for key, data in TRAINING_MELODIES.items()}
+
     cols = st.columns(3)
 
     for idx, (melody_name, melody_key) in enumerate(melody_options.items()):
@@ -841,6 +852,12 @@ def page_generate():
             st.session_state.model_instance = SecondOrderMarkovGenerator(
                 pitches=pitches,
                 rhythms=rhythms
+            )
+        elif st.session_state.selected_model == "VariableMarkov":
+            st.session_state.model_instance = VariableMarkovGenerator(
+                pitches=pitches,
+                rhythms=rhythms,
+                max_order=5
             )
         elif st.session_state.selected_model == "RuleBased":
             st.session_state.model_instance = RuleBasedMelodyGenerator(
@@ -1129,7 +1146,7 @@ def melody_to_wav(melody, tempo=120):
 def render_play_melody_button(audio_bytes):
     """Render a prominent button that plays the generated melody."""
     audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
-    components.html(
+    st.iframe(
         f"""
         <style>
             .melody-player {{
@@ -1207,7 +1224,7 @@ def autoplay_single_note(pitch, duration, tempo=120):
     audio_bytes = melody_to_wav([(pitch, duration)], tempo=tempo)
     audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    components.html(
+    st.iframe(
         f"""
         <audio autoplay>
             <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
@@ -1519,6 +1536,83 @@ def get_learning_step_info(model_name, model_instance, generated_events, generat
             "selected_label": format_event(selected_event),
             "explanation": explanation,
             "fallback": fallback,
+            "choice_kind": "event_probability",
+        }
+
+    if model_name == "VariableMarkov":
+        trace_item = model_instance.get_trace_for_step(step) if hasattr(model_instance, "get_trace_for_step") else None
+
+        if not trace_item:
+            return {
+                "memory": "Starting note-event copied from a random training fragment. Variable-order memory begins after the starting fragment.",
+                "choices": [],
+                "selected": selected_event,
+                "selected_label": format_event(selected_event),
+                "explanation": f"The melody starts with {format_event(selected_event)}. The model uses this starting fragment before it begins choosing new events with variable-order memory.",
+                "fallback": False,
+                "choice_kind": "event_probability",
+            }
+
+        attempts = trace_item.get("attempts", [])
+        attempt_lines = []
+        for attempt in attempts:
+            order = attempt.get("order", "?")
+            status = attempt.get("status", "checked")
+            total_count = attempt.get("total_count", 0)
+            min_count = attempt.get("min_count", 1)
+            context_events = [
+                (item.get("pitch"), item.get("rhythm"))
+                for item in attempt.get("context", [])
+            ]
+            context_label = " → ".join(format_event(event) for event in context_events) if context_events else "None"
+
+            if status == "used":
+                status_text = "used"
+            elif status == "too_rare":
+                status_text = f"too rare ({total_count}/{min_count})"
+            elif status == "missing":
+                status_text = "missing"
+            else:
+                status_text = status
+
+            attempt_lines.append(f"{order}-event memory: {context_label} — {status_text}")
+
+        selected_event_from_trace = trace_item.get("selected_event", {})
+        selected_from_trace = (
+            selected_event_from_trace.get("pitch", selected_event[0]),
+            selected_event_from_trace.get("rhythm", selected_event[1]),
+        )
+
+        possible_next_events = trace_item.get("possible_next_events", [])
+        choices = [
+            (
+                (item.get("pitch"), item.get("rhythm")),
+                float(item.get("probability", 0.0)),
+            )
+            for item in possible_next_events
+        ]
+
+        used_order = trace_item.get("used_order", 0)
+        if used_order:
+            memory = "<br>".join(attempt_lines)
+            explanation = trace_item.get(
+                "explanation",
+                f"The model used the longest reliable memory it could find: order {used_order}.",
+            )
+        else:
+            memory = "<br>".join(attempt_lines) if attempt_lines else "No reliable Markov memory was found."
+            explanation = trace_item.get(
+                "explanation",
+                "No reliable Markov pattern was found, so the model used weighted-random fallback.",
+            )
+
+        return {
+            "memory": memory,
+            "choices": normalize_choices(choices),
+            "selected": selected_from_trace,
+            "selected_label": format_event(selected_from_trace),
+            "explanation": explanation,
+            "fallback": trace_item.get("fallback_used", False),
             "choice_kind": "event_probability",
         }
 
