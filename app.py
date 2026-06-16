@@ -8,6 +8,7 @@ import streamlit.components.v1 as components
 from utils.melodies import TRAINING_MELODIES
 from utils.scorecard import evaluate_sequence, infer_duration_vocab_size
 from models.random_model import RandomMelodyGenerator
+from models.weighted_random import WeightedRandomMelodyGenerator
 from models.markov1 import FirstOrderMarkovGenerator
 from models.markov2 import SecondOrderMarkovGenerator
 from models.rule_based_basic import RuleBasedMelodyGenerator
@@ -49,6 +50,10 @@ if "play_learning_note" not in st.session_state:
     st.session_state.play_learning_note = False
 if "melody_length" not in st.session_state:
     st.session_state.melody_length = 16
+if "melody_history" not in st.session_state:
+    st.session_state.melody_history = []
+if "saved_history_index" not in st.session_state:
+    st.session_state.saved_history_index = None
 
 # Home-note settings for the scorecard.
 # These are used instead of automatic Western key detection, so Sakura Sakura
@@ -346,19 +351,25 @@ MODEL_UI = {
     "Random": {
         "name": "Random",
         "personality": "The Dice Roller",
-        "meaning": "Chooses notes by chance from the selected melody’s note pool.",
+        "meaning": "Chooses full pitch-rhythm note events by chance from the selected melody.",
         "button": "Choose Random",
+    },
+    "WeightedRandom": {
+        "name": "Weighted Random",
+        "personality": "The Loaded Dice Roller",
+        "meaning": "Chooses note events by chance, but events that appeared more often in the training melody are more likely.",
+        "button": "Choose Weighted Random",
     },
     "Markov1": {
         "name": "First-Order Markov",
         "personality": "The One-Note Listener",
-        "meaning": "Looks at the previous note before choosing what comes next.",
+        "meaning": "Looks at the previous note event before choosing what comes next.",
         "button": "Choose First-Order Markov",
     },
     "Markov2": {
         "name": "Second-Order Markov",
         "personality": "The Pattern Imitator",
-        "meaning": "Looks at the previous two notes, so it can imitate short patterns.",
+        "meaning": "Looks at the previous two note events, so it can imitate short patterns.",
         "button": "Choose Second-Order Markov",
     },
     "RuleBased": {
@@ -382,14 +393,249 @@ def render_page_header(title, subtitle=""):
     if subtitle:
         st.markdown(f'<div class="ml-card-text" style="margin-bottom:1rem;">{subtitle}</div>', unsafe_allow_html=True)
 
+
+# -----------------------------
+# Melody history + comparison
+# -----------------------------
+def score_to_percent(score):
+    """Convert a 0-1 score into a 0-100 integer."""
+    return int(round(clamp_score(score) * 100))
+
+
+def format_melody_sequence(melody):
+    """Return a compact pitch-duration sequence for history cards."""
+    return " · ".join(f"{pitch}({duration})" for pitch, duration in melody)
+
+
+def get_score_value(results, key, inverse=False):
+    """Safely read a scorecard value and optionally invert it."""
+    value = clamp_score(results.get(key, 0.0))
+    if inverse:
+        value = 1.0 - value
+    return value
+
+
+def get_saved_melody_label(index, entry):
+    """Label used in dropdowns and history cards."""
+    overall = score_to_percent(entry["results"].get("final_score", 0.0))
+    return (
+        f"Melody {index + 1}: {entry['model_display']} · "
+        f"{entry['training_melody_name']} · {overall}/100"
+    )
+
+
+def save_current_melody_to_history(melody, scorecard_results):
+    """Auto-save a generated melody so the user can replay and compare it later."""
+    selected_melody_data = TRAINING_MELODIES[st.session_state.selected_melody]
+
+    history_entry = {
+        "model": st.session_state.selected_model,
+        "model_display": get_model_display_name(st.session_state.selected_model),
+        "training_melody": st.session_state.selected_melody,
+        "training_melody_name": selected_melody_data["name"],
+        "rule_mode": st.session_state.rule_mode,
+        "length": len(melody),
+        "melody": list(melody),
+        "results": dict(scorecard_results),
+    }
+
+    st.session_state.melody_history.append(history_entry)
+    return len(st.session_state.melody_history)
+
+
+def show_saved_melody_scorecard(entry):
+    """Render a compact scorecard for one saved history item."""
+    results = entry["results"]
+
+    smoothness = get_score_value(results, "interval_smoothness")
+    jumps = get_score_value(results, "interval_smoothness", inverse=True)
+    patterns = get_score_value(results, "motif_repetition")
+    ending = get_score_value(results, "ending_on_tonic")
+    rhythm = get_score_value(results, "rhythmic_variety")
+    overall = get_score_value(results, "final_score")
+
+    st.write(f"**Model:** {entry['model_display']}")
+    st.write(f"**Training melody:** {entry['training_melody_name']}")
+    if entry.get("rule_mode"):
+        st.write(f"**Rule mode:** {entry['rule_mode'].title()}")
+    st.write(f"**Length:** {entry['length']} notes")
+
+    st.markdown(
+        f"""
+        | Metric | Score |
+        |---|---:|
+        | Moves smoothly | {score_to_percent(smoothness)} |
+        | Jumps around | {score_to_percent(jumps)} |
+        | Repeats ideas | {score_to_percent(patterns)} |
+        | Feels finished | {get_category(ending, "ending")} |
+        | Varied beats | {score_to_percent(rhythm)} |
+        | Overall | {score_to_percent(overall)} |
+        """
+    )
+
+
+def page_history():
+    """Show all melodies generated during the current app session."""
+    inject_global_ui_css()
+    render_page_header(
+        "Melody history",
+        "Every generated melody is saved here during this app session so you can replay it and compare outputs.",
+    )
+
+    history = st.session_state.melody_history
+
+    if not history:
+        st.info("No melodies saved yet. Generate a melody first.")
+        if st.button("← Back to model selection", use_container_width=True):
+            st.session_state.page = "home"
+            st.rerun()
+        return
+
+    top_col1, top_col2, top_col3 = st.columns([1, 1, 2])
+    with top_col1:
+        if st.button("← Back to Results", use_container_width=True):
+            st.session_state.page = "results"
+            st.rerun()
+    with top_col2:
+        if st.button("Clear History", use_container_width=True):
+            st.session_state.melody_history = []
+            st.session_state.saved_history_index = None
+            st.session_state.page = "home"
+            st.rerun()
+
+    st.divider()
+
+    compare_col, spacer_col = st.columns([1, 3])
+    with compare_col:
+        if st.button("⚖️ Compare Melodies", use_container_width=True, disabled=len(history) < 2):
+            st.session_state.page = "compare"
+            st.rerun()
+
+    st.divider()
+
+    for index, entry in enumerate(reversed(history)):
+        original_index = len(history) - 1 - index
+        label = get_saved_melody_label(original_index, entry)
+        overall = score_to_percent(entry["results"].get("final_score", 0.0))
+
+        st.markdown(
+            f"""
+            <div class="ml-card">
+                <div class="ml-card-title">{label}</div>
+                <div class="ml-card-text">
+                    {entry['length']} notes generated from <b>{entry['training_melody_name']}</b>
+                    {f" · {entry['rule_mode'].title()} mode" if entry.get('rule_mode') else ""}
+                </div>
+                <div class="ml-card-personality">Overall score: {overall}/100</div>
+                <div class="ml-card-text">{format_melody_sequence(entry['melody'])}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.expander(f"Open Melody {original_index + 1}", expanded=False):
+            st.write("#### Play melody")
+            render_play_melody_button(melody_to_wav(entry["melody"], tempo=120))
+            st.write("#### Scorecard")
+            show_saved_melody_scorecard(entry)
+
+        st.divider()
+
+
+def page_compare():
+    """Compare two saved melodies side-by-side."""
+    inject_global_ui_css()
+
+    if st.button("← Back to model selection", key="compare_back_home"):
+        st.session_state.page = "home"
+        st.rerun()
+
+    render_page_header(
+        "Compare two melodies",
+        "Select any two saved melodies, compare their scorecards, and play them side by side.",
+    )
+
+    history = st.session_state.melody_history
+
+    if len(history) < 2:
+        st.warning("Generate at least two melodies before comparing.")
+        return
+
+    labels = [get_saved_melody_label(i, entry) for i, entry in enumerate(history)]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        first_label = st.selectbox("Melody A", labels, index=max(0, len(labels) - 2), key="compare_a")
+    with col2:
+        second_label = st.selectbox("Melody B", labels, index=len(labels) - 1, key="compare_b")
+
+    index_a = labels.index(first_label)
+    index_b = labels.index(second_label)
+
+    if index_a == index_b:
+        st.warning("Choose two different melodies to compare.")
+        return
+
+    melody_a = history[index_a]
+    melody_b = history[index_b]
+
+    st.divider()
+
+    st.write("### Listen first")
+    play_col1, play_col2 = st.columns(2)
+    with play_col1:
+        st.write("#### Melody A")
+        st.caption(get_saved_melody_label(index_a, melody_a))
+        render_play_melody_button(melody_to_wav(melody_a["melody"], tempo=120))
+    with play_col2:
+        st.write("#### Melody B")
+        st.caption(get_saved_melody_label(index_b, melody_b))
+        render_play_melody_button(melody_to_wav(melody_b["melody"], tempo=120))
+
+    st.divider()
+
+    def ending_label(entry):
+        ending_score = get_score_value(entry["results"], "ending_on_tonic")
+        return get_category(ending_score, "ending")
+
+    comparison_rows = [
+        ("Model", melody_a["model_display"], melody_b["model_display"]),
+        ("Training Melody", melody_a["training_melody_name"], melody_b["training_melody_name"]),
+        ("Rule Mode", melody_a["rule_mode"].title() if melody_a.get("rule_mode") else "—", melody_b["rule_mode"].title() if melody_b.get("rule_mode") else "—"),
+        ("Length", f"{melody_a['length']} notes", f"{melody_b['length']} notes"),
+        ("Moves smoothly", score_to_percent(get_score_value(melody_a["results"], "interval_smoothness")), score_to_percent(get_score_value(melody_b["results"], "interval_smoothness"))),
+        ("Jumps around", score_to_percent(get_score_value(melody_a["results"], "interval_smoothness", inverse=True)), score_to_percent(get_score_value(melody_b["results"], "interval_smoothness", inverse=True))),
+        ("Repeats ideas", score_to_percent(get_score_value(melody_a["results"], "motif_repetition")), score_to_percent(get_score_value(melody_b["results"], "motif_repetition"))),
+        ("Feels finished", ending_label(melody_a), ending_label(melody_b)),
+        ("Varied beats", score_to_percent(get_score_value(melody_a["results"], "rhythmic_variety")), score_to_percent(get_score_value(melody_b["results"], "rhythmic_variety"))),
+        ("Overall", score_to_percent(get_score_value(melody_a["results"], "final_score")), score_to_percent(get_score_value(melody_b["results"], "final_score"))),
+    ]
+
+    st.write("### Score comparison")
+    table_md = "| Feature | Melody A | Melody B |\n|---|---:|---:|\n"
+    for feature, value_a, value_b in comparison_rows:
+        table_md += f"| {feature} | {value_a} | {value_b} |\n"
+    st.markdown(table_md)
+
+    st.write("### Melody sequences")
+    seq_col1, seq_col2 = st.columns(2)
+    with seq_col1:
+        st.write("**Melody A**")
+        st.caption(format_melody_sequence(melody_a["melody"]))
+    with seq_col2:
+        st.write("**Melody B**")
+        st.caption(format_melody_sequence(melody_b["melody"]))
+
+
+
 # Page: HOME - Model Selection
 def page_home():
     inject_global_ui_css()
     render_brand_hero()
     render_page_header("Choose a model", "Each model has a different composing personality. Start with one and compare the results later.")
 
-    cols = st.columns(4)
-    model_keys = ["Random", "RuleBased", "Markov1", "Markov2"]
+    cols = st.columns(5)
+    model_keys = ["Random", "WeightedRandom", "RuleBased", "Markov1", "Markov2"]
     for col, model_key in zip(cols, model_keys):
         info = MODEL_UI[model_key]
         with col:
@@ -410,6 +656,14 @@ def page_home():
                     st.session_state.page = "rule_mode"
                 else:
                     st.session_state.page = "training_melody"
+                st.rerun()
+
+    if st.session_state.melody_history:
+        st.divider()
+        history_col, spacer_col = st.columns([1, 3])
+        with history_col:
+            if st.button("📜 Melody History", use_container_width=True):
+                st.session_state.page = "history"
                 st.rerun()
 
 # Page: RULE-BASED MODE Selection
@@ -469,7 +723,7 @@ def page_rule_mode():
 # Page: TRAINING MELODY Selection
 def page_training_melody():
     inject_global_ui_css()
-    render_page_header("Choose a training melody", "The selected melody becomes the source material for the model’s note and rhythm choices.")
+    render_page_header("Choose a training melody", "The selected melody becomes the source material for the model’s pitch-rhythm note events.")
     st.markdown(
         f'Selected Model: <span class="ml-selected-pill">{get_model_display_name(st.session_state.selected_model)}</span>',
         unsafe_allow_html=True,
@@ -515,6 +769,18 @@ def page_training_melody():
 # Page: GENERATE Melody
 def page_generate():
     inject_global_ui_css()
+
+    if st.button("← Back to model selection", key="generate_back_home"):
+        st.session_state.page = "home"
+        st.session_state.selected_model = None
+        st.session_state.selected_melody = None
+        st.session_state.model_instance = None
+        st.session_state.generated_melody = None
+        st.session_state.scorecard_results = None
+        st.session_state.learning_step = 0
+        st.session_state.rule_mode = None
+        st.rerun()
+
     render_page_header("Generate melody", "Review your setup, then create a melody from the selected model.")
 
     melody_display = TRAINING_MELODIES[st.session_state.selected_melody]["name"]
@@ -561,6 +827,11 @@ def page_generate():
                 pitches=pitches,
                 rhythms=rhythms
             )
+        elif st.session_state.selected_model == "WeightedRandom":
+            st.session_state.model_instance = WeightedRandomMelodyGenerator(
+                pitches=pitches,
+                rhythms=rhythms
+            )
         elif st.session_state.selected_model == "Markov1":
             st.session_state.model_instance = FirstOrderMarkovGenerator(
                 pitches=pitches,
@@ -591,26 +862,12 @@ def page_generate():
         home_note = get_training_home_note(st.session_state.selected_melody, selected_melody_data)
         scorecard_results = evaluate_sequence(melody, d_max, home_note=home_note)
         st.session_state.scorecard_results = scorecard_results
+        st.session_state.saved_history_index = save_current_melody_to_history(melody, scorecard_results) - 1
         
         # Move to results page
         st.session_state.page = "results"
         st.rerun()
     
-    st.divider()
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("← Try Another Model", use_container_width=True):
-            st.session_state.page = "home"
-            st.session_state.selected_model = None
-            st.session_state.selected_melody = None
-            st.session_state.model_instance = None
-            st.session_state.generated_melody = None
-            st.session_state.scorecard_results = None
-            st.session_state.learning_step = 0
-            st.session_state.rule_mode = None
-            st.rerun()
-
 # Helper: Generate visual bar
 def create_bar(score, max_segments=10):
     """Create a visual bar for score (0-1 scale)."""
@@ -1079,116 +1336,190 @@ def get_model_friendly_name(model_name):
     return get_model_display_name(model_name)
 
 
+def format_event(event):
+    """Return a readable label for a pitch-rhythm event."""
+    if isinstance(event, (list, tuple)) and len(event) == 2:
+        pitch, duration = event
+        beat_word = "beat" if float(duration) == 1.0 else "beats"
+        return f"{pitch} ({duration} {beat_word})"
+    return str(event)
+
+
 def normalize_choices(choices):
-    """Sort and clean a list of (choice, probability) pairs."""
+    """Sort and clean probability choices while preserving optional raw scores."""
     cleaned = []
-    for note, prob in choices:
+    for choice in choices:
+        if len(choice) == 3:
+            item, prob, raw_score = choice
+        else:
+            item, prob = choice
+            raw_score = None
+
         try:
             p = float(prob)
         except (TypeError, ValueError):
             p = 0.0
-        cleaned.append((note, max(0.0, min(1.0, p))))
+
+        p = max(0.0, min(1.0, p))
+
+        if raw_score is None:
+            cleaned.append((item, p))
+        else:
+            cleaned.append((item, p, raw_score))
+
     return sorted(cleaned, key=lambda item: item[1], reverse=True)
 
 
-def get_learning_step_info(model_name, model_instance, generated_pitches, step):
+def get_learning_step_info(model_name, model_instance, generated_events, generated_pitches, step):
     """
-    Explain how the current pitch could have been selected.
+    Explain how the current event could have been selected.
 
-    This reads the already-built chains from the model instance, so it stays aligned
-    with the generator classes without changing those model files.
+    For probabilistic models, this reads event pools/chains from the model instance.
+    For the rule-based model, it keeps using the pitch-based rule trace.
     """
-    selected_note = generated_pitches[step]
+    selected_event = tuple(generated_events[step])
+    selected_pitch = generated_pitches[step]
 
     if model_name == "Random":
-        pitch_pool = getattr(model_instance, "pitch_pool", sorted(set(getattr(model_instance, "pitches", generated_pitches))))
-        probability = 1.0 / len(pitch_pool) if pitch_pool else 0.0
+        event_pool = getattr(model_instance, "event_pool", sorted(set(getattr(model_instance, "events", generated_events))))
+        probability = 1.0 / len(event_pool) if event_pool else 0.0
         return {
-            "memory": "No memory. This model chooses each pitch independently.",
-            "choices": normalize_choices([(note, probability) for note in pitch_pool]),
-            "selected": selected_note,
-            "explanation": f"{selected_note} was selected by chance from the available pitch pool.",
+            "memory": "No memory. This model chooses each full note event independently.",
+            "choices": normalize_choices([(event, probability) for event in event_pool]),
+            "selected": selected_event,
+            "selected_label": format_event(selected_event),
+            "explanation": f"{format_event(selected_event)} was selected by chance from the available training note-events.",
             "fallback": False,
+            "choice_kind": "event_probability",
+        }
+
+    if model_name == "WeightedRandom":
+        event_pool = getattr(model_instance, "event_pool", [])
+        event_weights = getattr(model_instance, "event_weights", [])
+        choices = list(zip(event_pool, event_weights))
+
+        return {
+            "memory": (
+                "No sequence memory. This model does not look at the previous note. "
+                "It uses how often each full pitch-rhythm event appeared in the training melody as its probability weight."
+            ),
+            "choices": normalize_choices(choices),
+            "selected": selected_event,
+            "selected_label": format_event(selected_event),
+            "explanation": (
+                f"{format_event(selected_event)} was selected by weighted chance. "
+                "Note-events that appeared more often in the training melody had a higher probability."
+            ),
+            "fallback": False,
+            "choice_kind": "event_probability",
         }
 
     if model_name == "Markov1":
         if step == 0:
             return {
-                "memory": "No previous note yet.",
+                "memory": "No previous note event yet.",
                 "choices": [],
-                "selected": selected_note,
-                "explanation": f"The melody starts with {selected_note}. The first note is used as the starting point before the one-note memory begins.",
+                "selected": selected_event,
+                "selected_label": format_event(selected_event),
+                "explanation": f"The melody starts with {format_event(selected_event)}. The first event is the starting point before one-event memory begins.",
                 "fallback": False,
+                "choice_kind": "event_probability",
             }
 
-        previous_note = generated_pitches[step - 1]
-        chain = getattr(model_instance, "note_chain", {})
-        choices = chain.get(previous_note, [])
+        previous_event = tuple(generated_events[step - 1])
+        chain = getattr(model_instance, "event_chain", {})
+        choices = chain.get(previous_event, [])
 
         if choices:
-            explanation = f"The model looked at the previous note, {previous_note}, and used the training melody's transition probabilities."
+            explanation = (
+                f"The model looked at the previous note-event, {format_event(previous_event)}, "
+                "and used the training melody's event transition probabilities."
+            )
             fallback = False
         else:
             keys = sorted(chain.keys())
             probability = 1.0 / len(keys) if keys else 0.0
-            choices = [(note, probability) for note in keys]
-            explanation = f"The model had no stored next-note options after {previous_note}, so it restarted from a valid training-state note."
+            choices = [(event, probability) for event in keys]
+            explanation = (
+                f"The model had no stored next-event options after {format_event(previous_event)}, "
+                "so it restarted from a valid training event."
+            )
             fallback = True
 
         return {
-            "memory": f"Previous note: {previous_note}",
+            "memory": f"Previous note-event: {format_event(previous_event)}",
             "choices": normalize_choices(choices),
-            "selected": selected_note,
+            "selected": selected_event,
+            "selected_label": format_event(selected_event),
             "explanation": explanation,
             "fallback": fallback,
+            "choice_kind": "event_probability",
         }
 
     if model_name == "Markov2":
         if step == 0:
             return {
-                "memory": "No two-note memory yet.",
+                "memory": "No two-event memory yet.",
                 "choices": [],
-                "selected": selected_note,
-                "explanation": f"The melody starts with {selected_note}. The second-order model first needs a two-note starting pair.",
+                "selected": selected_event,
+                "selected_label": format_event(selected_event),
+                "explanation": f"The melody starts with {format_event(selected_event)}. The second-order model first needs a two-event starting pair.",
                 "fallback": False,
+                "choice_kind": "event_probability",
             }
 
         if step == 1:
-            previous_note = generated_pitches[step - 1]
+            previous_event = tuple(generated_events[step - 1])
             return {
-                "memory": f"Starting pair being formed: {previous_note} → {selected_note}",
+                "memory": f"Starting pair being formed: {format_event(previous_event)} → {format_event(selected_event)}",
                 "choices": [],
-                "selected": selected_note,
-                "explanation": f"{selected_note} completes the starting pair. After this, the model can use two-note memory.",
+                "selected": selected_event,
+                "selected_label": format_event(selected_event),
+                "explanation": f"{format_event(selected_event)} completes the starting pair. After this, the model can use two-event memory.",
                 "fallback": False,
+                "choice_kind": "event_probability",
             }
 
-        previous_pair = (generated_pitches[step - 2], generated_pitches[step - 1])
-        chain = getattr(model_instance, "note_chain", {})
-        choices = chain.get(previous_pair, [])
+        previous_pair = (tuple(generated_events[step - 2]), tuple(generated_events[step - 1]))
+        second_order_chain = getattr(model_instance, "event_chain_2", {})
+        first_order_chain = getattr(model_instance, "event_chain_1", {})
+        second_order_choices = second_order_chain.get(previous_pair, [])
 
-        if choices:
+        if second_order_choices:
+            choices = second_order_choices
             explanation = (
-                f"The model looked at the two-note pattern {previous_pair[0]} → {previous_pair[1]} "
-                "and used the training melody's transition probabilities."
+                f"The model looked at the two-event pattern {format_event(previous_pair[0])} → {format_event(previous_pair[1])} "
+                "and used the training melody's second-order transition probabilities."
             )
             fallback = False
         else:
-            keys = sorted(chain.keys())
-            probability = 1.0 / len(keys) if keys else 0.0
-            choices = [(pair[1], probability) for pair in keys]
-            explanation = (
-                f"The model had not seen {previous_pair[0]} → {previous_pair[1]} as a stored pattern, "
-                "so it restarted from a valid training-state pair."
-            )
+            last_event = previous_pair[1]
+            first_order_choices = first_order_chain.get(last_event, [])
             fallback = True
 
+            if first_order_choices:
+                choices = first_order_choices
+                explanation = (
+                    f"The exact two-event pattern {format_event(previous_pair[0])} → {format_event(previous_pair[1])} was not stored, "
+                    f"so the model backed off to one-event memory after {format_event(last_event)}."
+                )
+            else:
+                event_pool = getattr(model_instance, "event_pool", [])
+                event_weights = getattr(model_instance, "event_weights", [])
+                choices = list(zip(event_pool, event_weights))
+                explanation = (
+                    f"The exact two-event pattern and the one-event fallback after {format_event(last_event)} were unavailable, "
+                    "so the model used weighted-random training events as its final fallback."
+                )
+
         return {
-            "memory": f"Previous two notes: {previous_pair[0]} → {previous_pair[1]}",
+            "memory": f"Previous two note-events: {format_event(previous_pair[0])} → {format_event(previous_pair[1])}",
             "choices": normalize_choices(choices),
-            "selected": selected_note,
+            "selected": selected_event,
+            "selected_label": format_event(selected_event),
             "explanation": explanation,
             "fallback": fallback,
+            "choice_kind": "event_probability",
         }
 
     if model_name == "RuleBased":
@@ -1198,8 +1529,9 @@ def get_learning_step_info(model_name, model_instance, generated_pitches, step):
             return {
                 "memory": f"Starting home note. Style: {style_name}. Pitch pool: {', '.join(pitch_classes)}.",
                 "choices": [],
-                "selected": selected_note,
-                "explanation": f"The rule-based melody starts on {selected_note}, the home note for the selected style.",
+                "selected": selected_pitch,
+                "selected_label": selected_pitch,
+                "explanation": f"The rule-based melody starts on {selected_pitch}, the home note for the selected style.",
                 "fallback": False,
                 "choice_kind": "rule",
             }
@@ -1210,7 +1542,8 @@ def get_learning_step_info(model_name, model_instance, generated_pitches, step):
             return {
                 "memory": "Rule trace was not stored for this step.",
                 "choices": [],
-                "selected": selected_note,
+                "selected": selected_pitch,
+                "selected_label": selected_pitch,
                 "explanation": "This rule-based step is not available in the saved trace.",
                 "fallback": False,
                 "choice_kind": "rule",
@@ -1240,8 +1573,9 @@ def get_learning_step_info(model_name, model_instance, generated_pitches, step):
                 f"Pitch pool: {', '.join(pitch_classes)}"
             ),
             "choices": choices,
-            "selected": selected_note,
-            "explanation": trace_item.get("explanation", f"{selected_note} had the best rule-based score for this step."),
+            "selected": selected_pitch,
+            "selected_label": selected_pitch,
+            "explanation": trace_item.get("explanation", f"{selected_pitch} had the best rule-based score for this step."),
             "fallback": False,
             "choice_kind": "rule",
         }
@@ -1249,22 +1583,23 @@ def get_learning_step_info(model_name, model_instance, generated_pitches, step):
     return {
         "memory": "No model explanation available.",
         "choices": [],
-        "selected": selected_note,
+        "selected": selected_event,
+        "selected_label": format_event(selected_event),
         "explanation": "This model is not configured for Learning Mode yet.",
         "fallback": False,
     }
 
 
-def render_melody_builder(generated_pitches, step):
-    """Render melody so far as note chips."""
+def render_melody_builder(generated_events, step):
+    """Render melody so far as note-event chips."""
     chips = []
-    for i, note in enumerate(generated_pitches):
+    for i, event in enumerate(generated_events):
         if i < step:
             css_class = "note-chip"
-            label = note
+            label = format_event(event)
         elif i == step:
             css_class = "note-chip current"
-            label = note
+            label = format_event(event)
         else:
             css_class = "note-chip future"
             label = "_"
@@ -1280,8 +1615,8 @@ def render_melody_builder(generated_pitches, step):
     )
 
 
-def render_choice_bars(choices, selected_note, choice_kind="probability"):
-    """Render possible next notes as probability bars or relative rule-score bars."""
+def render_choice_bars(choices, selected_item, choice_kind="probability"):
+    """Render possible next note-events as probability bars or notes as relative rule-score bars."""
     if not choices:
         message = "No probability table is needed for this starting step."
         if choice_kind == "rule":
@@ -1299,24 +1634,26 @@ def render_choice_bars(choices, selected_note, choice_kind="probability"):
     rows = []
     for choice in choices:
         if len(choice) == 3:
-            note, value, raw_score = choice
+            item, value, raw_score = choice
         else:
-            note, value = choice
+            item, value = choice
             raw_score = None
 
         percent = int(round(max(0.0, min(1.0, float(value))) * 100))
-        selected_marker = " ✅" if note == selected_note else ""
+        selected_marker = " ✅" if item == selected_item else ""
 
         if choice_kind == "rule" and raw_score is not None:
+            item_label = str(item)
             value_label = f"score {raw_score:g}"
         else:
+            item_label = format_event(item)
             value_label = f"{percent}%"
 
         rows.append(
             f"""
             <div class="choice-row">
                 <div class="choice-label">
-                    <span>{note}{selected_marker}</span>
+                    <span>{item_label}{selected_marker}</span>
                     <span>{value_label}</span>
                 </div>
                 <div class="choice-track">
@@ -1346,9 +1683,10 @@ def page_learning():
 
     inject_learning_css()
 
+    generated_events = [(pitch, duration) for pitch, duration in melody]
     generated_pitches = [pitch for pitch, duration in melody]
     generated_durations = [duration for pitch, duration in melody]
-    total_notes = len(generated_pitches)
+    total_notes = len(generated_events)
 
     step = int(st.session_state.learning_step)
     step = max(0, min(step, total_notes - 1))
@@ -1364,6 +1702,7 @@ def page_learning():
     info = get_learning_step_info(
         st.session_state.selected_model,
         model_instance,
+        generated_events,
         generated_pitches,
         step,
     )
@@ -1374,14 +1713,14 @@ def page_learning():
             <div class="learning-title">🎼 Melody Builder</div>
             <div>
                 <b>{get_model_friendly_name(st.session_state.selected_model)}</b><br>
-                Step {step + 1} of {total_notes}: revealing the selected pitch and how the model chose it.
+                Step {step + 1} of {total_notes}: revealing the selected note-event and how the model chose it.
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    render_melody_builder(generated_pitches, step)
+    render_melody_builder(generated_events, step)
 
     left_col, right_col = st.columns([1, 1])
 
@@ -1401,8 +1740,9 @@ def page_learning():
             <div class="learning-card">
                 <div class="learning-card-title">✅ Selected note</div>
                 <div class="learning-card-body">
-                    <span class="selected-note">{info["selected"]}</span><br><br>
-                    Duration used in the generated melody: <b>{selected_duration}</b> beat(s)
+                    <span class="selected-note">{info["selected_label"]}</span><br><br>
+                    Pitch: <b>{selected_pitch}</b><br>
+                    Duration: <b>{selected_duration}</b> beat(s)
                 </div>
             </div>
             """,
@@ -1417,12 +1757,13 @@ def page_learning():
             """,
             unsafe_allow_html=True,
         )
-        render_choice_bars(info["choices"], selected_pitch, info.get("choice_kind", "probability"))
+        selected_choice = info["selected"]
+        render_choice_bars(info["choices"], selected_choice, info.get("choice_kind", "probability"))
         st.markdown("</div>", unsafe_allow_html=True)
 
         fallback_note = ""
         if info.get("fallback"):
-            fallback_note = "<br><br><b>Note:</b> This was a fallback/restart step because the exact memory pattern had no stored continuation."
+            fallback_note = "<br><br><b>Note:</b> This was a fallback/backoff step because the exact memory pattern had no stored continuation."
 
         st.markdown(
             f"""
@@ -1470,6 +1811,17 @@ def page_learning():
 # Page: RESULTS - Scorecard Display
 def page_results():
     inject_global_ui_css()
+
+    if st.button("← Back to model selection", key="results_back_home"):
+        st.session_state.page = "home"
+        st.session_state.selected_model = None
+        st.session_state.selected_melody = None
+        st.session_state.model_instance = None
+        st.session_state.generated_melody = None
+        st.session_state.scorecard_results = None
+        st.session_state.rule_mode = None
+        st.rerun()
+
     render_page_header("Melody analysis", "Listen to the result, inspect the notes, and compare the music-theory scorecard.")
     
     melody = st.session_state.generated_melody
@@ -1484,6 +1836,24 @@ def page_results():
     
     # Display melody sequence and click-to-play audio
     st.write("### Generated Melody")
+    st.markdown(
+    """
+    <div style="
+        margin-top: 0.35rem;
+        margin-bottom: 0.9rem;
+        padding: 0.65rem 0.85rem;
+        border-left: 4px solid #c4b5fd;
+        border-radius: 10px;
+        background: rgba(248, 250, 252, 0.9);
+        color: #475569;
+        font-size: 0.94rem;
+        line-height: 1.45;
+    ">
+        This is the melody produced by the model. The first line shows the pitch in music notation, and the small number below it shows the beat duration.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
     audio_bytes = melody_to_wav(melody, tempo=120)
     render_play_melody_button(audio_bytes)
@@ -1497,7 +1867,7 @@ def page_results():
     st.divider()
     
     # Display scorecard
-    st.write("### Music Theory Scorecard")
+    st.write("### Melody Feel Scorecard")
     
     smoothness = results["interval_smoothness"]
     jumps = 1.0 - smoothness  # Inverse
@@ -1514,10 +1884,10 @@ def page_results():
     st.markdown(
         f"""
         <div class="score-hero">
-            <div class="score-hero-title">✨ Overall musicality</div>
+            <div class="score-hero-title">✨ Overall feel</div>
             <div class="score-hero-number">{overall_percent}/100</div>
             <div class="score-hero-subtitle">
-                Based on smoothness, melodic jumps, recurring patterns, home-note resolution, and rhythmic variety.
+                Based on whether the melody moves smoothly, avoids too many jumps, repeats ideas, ends clearly, and uses varied beats.
                 Current level: <b>{overall_category}</b>.
             </div>
         </div>
@@ -1525,92 +1895,95 @@ def page_results():
         unsafe_allow_html=True,
     )
     st.info(
-    "Note: a high score means the melody matches several features the scorecard checks, "
-    "such as smooth movement, recurring patterns, rhythmic variety, and ending on the home note. "
-    "It does not always mean the melody will sound the most musical to a listener. "
-    "A melody can follow the rules well but still feel repetitive, which shows why listening matters alongside the math."
-)
+        "Note: this scorecard is a guide, not a judge. A high score means the melody matches patterns MelodyLab can measure, "
+        "but your ear still matters. Some melodies can follow the rules and still sound plain, while others may break rules and sound interesting."
+    )
 
     row1_col1, row1_col2, row1_col3 = st.columns(3)
     with row1_col1:
         metric_card(
-            "Smoothness",
+            "Does it move smoothly?",
             smoothness,
             get_category(smoothness, "standard"),
-            "How connected the note-to-note movement feels.",
+            "Higher means the melody mostly moves between nearby pitches instead of sudden jumps.",
             "🌊",
         )
     with row1_col2:
         metric_card(
-            "Jumps",
+            "Does it jump around?",
             jumps,
             get_category(jumps, "standard"),
-            "How much the melody uses larger leaps.",
+            "Higher means the melody uses more wide pitch changes. A few can be exciting; too many can feel random.",
             "🦘",
         )
     with row1_col3:
         metric_card(
-            "Patterns",
+            "Does it repeat ideas?",
             patterns,
             get_category(patterns, "standard"),
-            "How strongly motifs or repeated ideas appear.",
+            "Higher means the melody brings back short patterns, which can make it feel more organized.",
             "🔁",
         )
 
     row2_col1, row2_col2 = st.columns(2)
     with row2_col1:
         metric_card(
-            "Ending",
+            "Does it feel finished?",
             ending,
             get_category(ending, "ending"),
-            "Whether the melody resolves on the selected training melody’s home note.",
+            "Checks whether the melody lands on the home note, which often makes it feel resolved.",
             "🏁",
         )
     with row2_col2:
         metric_card(
-            "Beat Variety",
+            "Are the beats varied?",
             rhythm,
             get_category(rhythm, "rhythm"),
-            "Balance between rhythmic variety and repeated beat patterns.",
+            "Checks whether the beat durations have some variety without becoming completely scattered.",
             "🥁",
         )
 
-    with st.expander("What do these scores mean?", expanded=False):
-        st.write(
-            "Smoothness rewards mostly stepwise motion. Jumps is the inverse of smoothness, "
-            "so a high jump score means the melody contains more large leaps. Patterns measures "
-            "motif repetition. Ending checks whether the final note resolves on the selected training melody’s home note. "
-            "Beat Variety combines rhythmic diversity with rhythmic patterning."
+    with st.expander("Explanation for nerds", expanded=False):
+        st.markdown("""
+            Smoothness rewards mostly stepwise motion. Jumps is the inverse of smoothness, so a high jump score means the melody contains more large leaps. Patterns measures motif repetition. Ending checks whether the final note resolves on the selected training melody’s home note. Beat Variety combines rhythmic diversity with rhythmic patterning.
+            """
         )
 
     st.divider()
     
-    # Action buttons
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("Generate Again", use_container_width=True):
-            st.session_state.page = "generate"
-            st.session_state.generated_melody = None
-            st.session_state.scorecard_results = None
-            st.rerun()
-    
-    with col2:
+    # Main feature buttons
+    primary_col1, primary_col2 = st.columns(2)
+
+    with primary_col1:
         if st.button("🎼 Watch How It Was Composed", use_container_width=True, type="primary"):
             st.session_state.learning_step = 0
             st.session_state.play_learning_note = False
             st.session_state.page = "learning"
             st.rerun()
-    
-    with col3:
-        if st.button("← Try Another Model", use_container_width=True):
-            st.session_state.page = "home"
-            st.session_state.selected_model = None
-            st.session_state.selected_melody = None
-            st.session_state.model_instance = None
+
+    with primary_col2:
+        if st.button(
+            "⚖️ Compare Melodies",
+            use_container_width=True,
+            type="primary",
+            disabled=len(st.session_state.melody_history) < 2,
+        ):
+            st.session_state.page = "compare"
+            st.rerun()
+
+    # Secondary actions
+    secondary_col1, secondary_col2 = st.columns(2)
+
+    with secondary_col1:
+        if st.button("Generate Again", use_container_width=True):
+            st.session_state.page = "generate"
             st.session_state.generated_melody = None
             st.session_state.scorecard_results = None
-            st.session_state.rule_mode = None
+            st.rerun()
+
+    with secondary_col2:
+        if st.button("📜 View Melody History", use_container_width=True):
+            st.session_state.page = "history"
             st.rerun()
 
 # Router
@@ -1626,3 +1999,7 @@ elif st.session_state.page == "results":
     page_results()
 elif st.session_state.page == "learning":
     page_learning()
+elif st.session_state.page == "history":
+    page_history()
+elif st.session_state.page == "compare":
+    page_compare()
