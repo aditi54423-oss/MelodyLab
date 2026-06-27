@@ -3,6 +3,7 @@ import numpy as np
 import io
 import wave
 import base64
+import json
 from pathlib import Path
 from utils.melodies import TRAINING_MELODIES
 from utils.scorecard import evaluate_sequence, infer_duration_vocab_size
@@ -16,6 +17,10 @@ from models.rule_based_basic import RuleBasedMelodyGenerator
 APP_DIR = Path(__file__).resolve().parent
 LOGO_FILE = APP_DIR / "melodylab_logo.png"
 FAVICON_FILE = APP_DIR / "melodylab_favicon.png"
+DATA_DIR = APP_DIR / "data" / "processed"
+if not DATA_DIR.exists():
+    DATA_DIR = Path("C:/Users/Poonam-hp/Documents/GitHub/MelodyLab/data/processed")
+
 
 if not LOGO_FILE.exists():
     LOGO_FILE = Path("C:/Users/Poonam-hp/Documents/GitHub/MelodyLab/melodylab_logo.png")
@@ -55,19 +60,6 @@ if "melody_history" not in st.session_state:
 if "saved_history_index" not in st.session_state:
     st.session_state.saved_history_index = None
 
-# Home-note settings for the scorecard.
-# These are used instead of automatic Western key detection, so Sakura Sakura
-# can be judged by its own resting/home note.
-DEFAULT_HOME_NOTES = {
-    "minuet": "G",
-    "amazing_grace": "F",
-    "amazing grace": "F",
-    "sakura": "A",
-    "sakura_sakura": "A",
-    "sakura sakura": "A",
-}
-
-
 MELODY_ICONS = {
     "minuet": "🎻",
     "amazing_grace": "🎺",
@@ -103,25 +95,145 @@ def get_training_melody_icon(melody_key, melody_data):
     return "🎵"
 
 
-def get_training_home_note(melody_key, melody_data):
-    """
-    Return the expected home note for the selected training melody.
-    Priority:
-    1. A home_note field inside TRAINING_MELODIES, if you add one later.
-    2. A safe name/key lookup for the current built-in melodies.
-    3. G as a fallback for older Minuet-only versions.
-    """
-    if "home_note" in melody_data:
-        return str(melody_data["home_note"]).strip()
 
-    key_text = str(melody_key).lower().strip()
-    name_text = str(melody_data.get("name", "")).lower().strip()
+PACK_SOURCES = {
+    "pack:beginner_pack": {
+        "file": "beginner_pack.json",
+        "icon": "🌱",
+        "fallback_name": "Beginner Pack",
+        "short_description": "Strict, clean MelodyHub melodies for simpler outputs.",
+    },
+    "pack:public_domain_pack": {
+        "file": "public_domain_pack.json",
+        "icon": "📚",
+        "fallback_name": "Public Domain Melodies Pack",
+        "short_description": "A larger, looser public-domain-style MelodyHub pack.",
+    },
+}
 
-    for label, home_note in DEFAULT_HOME_NOTES.items():
-        if label in key_text or label in name_text:
-            return home_note
 
-    return "G"
+@st.cache_data(show_spinner=False)
+def load_melody_packs():
+    """Load MelodyHub JSON packs and flatten them into pitch-rhythm training events."""
+    loaded = {}
+
+    for source_key, config in PACK_SOURCES.items():
+        pack_path = DATA_DIR / config["file"]
+        if not pack_path.exists():
+            # Development fallback for this chat/exported test environment.
+            local_fallback = APP_DIR / config["file"]
+            if local_fallback.exists():
+                pack_path = local_fallback
+            else:
+                continue
+
+        with open(pack_path, "r", encoding="utf-8") as f:
+            pack = json.load(f)
+
+        melodies = pack.get("melodies", [])
+        events = []
+        for melody in melodies:
+            for event in melody.get("events", []):
+                if isinstance(event, (list, tuple)) and len(event) == 2:
+                    pitch, rhythm = event
+                    events.append((str(pitch), float(rhythm)))
+
+        pitches = [pitch for pitch, _rhythm in events]
+        rhythms = [rhythm for _pitch, rhythm in events]
+        name = pack.get("name", config["fallback_name"])
+
+        loaded[source_key] = {
+            "key": source_key,
+            "name": name,
+            "description": pack.get("description", config["short_description"]),
+            "icon": config["icon"],
+            "source_type": "pack",
+            "is_pack": True,
+            "melody_count": int(pack.get("melody_count", len(melodies))),
+            "note_count": len(events),
+            "pitches": pitches,
+            "rhythms": rhythms,
+            "events": events,
+        }
+
+    return loaded
+
+
+def get_single_training_sources():
+    """Wrap the built-in training melodies in the same structure as JSON packs."""
+    sources = {}
+    for melody_key, melody_data in TRAINING_MELODIES.items():
+        source_key = f"single:{melody_key}"
+        pitches = list(melody_data.get("pitches", []))
+        rhythms = list(melody_data.get("rhythms", []))
+        sources[source_key] = {
+            "key": source_key,
+            "single_key": melody_key,
+            "name": melody_data.get("name", melody_key),
+            "description": melody_data.get("description", "Built-in demo melody."),
+            "icon": get_training_melody_icon(melody_key, melody_data),
+            "source_type": "single",
+            "is_pack": False,
+            "melody_count": 1,
+            "note_count": len(pitches),
+            "pitches": pitches,
+            "rhythms": rhythms,
+            "events": list(zip(pitches, rhythms)),
+        }
+    return sources
+
+
+def normalize_training_source_key(source_key):
+    """Support older session-state values like 'minuet' alongside new 'single:minuet'."""
+    if source_key in TRAINING_MELODIES:
+        return f"single:{source_key}"
+    return source_key
+
+
+def get_all_training_sources():
+    """Return every available training source: JSON packs first, then single melodies."""
+    sources = {}
+    sources.update(load_melody_packs())
+    sources.update(get_single_training_sources())
+    return sources
+
+
+def get_available_training_sources(model_name):
+    """Apply model-specific training-source rules."""
+    all_sources = get_all_training_sources()
+
+    if model_name == "VariableMarkov":
+        # Variable Markov is intentionally limited to the big packs and Minuet.
+        return {
+            key: value
+            for key, value in all_sources.items()
+            if value.get("source_type") == "pack" or value.get("single_key") == "minuet"
+        }
+
+    if model_name == "RuleBased":
+        # Rule-Based stays on the original single built-in melodies only.
+        return {
+            key: value
+            for key, value in all_sources.items()
+            if value.get("source_type") == "single"
+        }
+
+    return all_sources
+
+
+def get_selected_training_data():
+    """Read the currently selected training source from session state."""
+    source_key = normalize_training_source_key(st.session_state.selected_melody)
+    return get_all_training_sources()[source_key]
+
+
+def get_training_display_name(source_key):
+    """Return a readable name for history/setup labels."""
+    source_key = normalize_training_source_key(source_key)
+    source = get_all_training_sources().get(source_key)
+    return source["name"] if source else str(source_key)
+
+
 
 
 # -----------------------------
@@ -432,13 +544,13 @@ def get_saved_melody_label(index, entry):
 
 def save_current_melody_to_history(melody, scorecard_results):
     """Auto-save a generated melody so the user can replay and compare it later."""
-    selected_melody_data = TRAINING_MELODIES[st.session_state.selected_melody]
+    selected_training_data = get_selected_training_data()
 
     history_entry = {
         "model": st.session_state.selected_model,
         "model_display": get_model_display_name(st.session_state.selected_model),
-        "training_melody": st.session_state.selected_melody,
-        "training_melody_name": selected_melody_data["name"],
+        "training_melody": normalize_training_source_key(st.session_state.selected_melody),
+        "training_melody_name": selected_training_data["name"],
         "rule_mode": st.session_state.rule_mode,
         "length": len(melody),
         "melody": list(melody),
@@ -456,7 +568,6 @@ def show_saved_melody_scorecard(entry):
     smoothness = get_score_value(results, "interval_smoothness")
     jumps = get_score_value(results, "interval_smoothness", inverse=True)
     patterns = get_score_value(results, "motif_repetition")
-    ending = get_score_value(results, "ending_on_tonic")
     rhythm = get_score_value(results, "rhythmic_variety")
     overall = get_score_value(results, "final_score")
 
@@ -473,8 +584,7 @@ def show_saved_melody_scorecard(entry):
         | Moves smoothly | {score_to_percent(smoothness)} |
         | Jumps around | {score_to_percent(jumps)} |
         | Repeats ideas | {score_to_percent(patterns)} |
-        | Feels finished | {get_category(ending, "ending")} |
-        | Varied beats | {score_to_percent(rhythm)} |
+                | Varied beats | {score_to_percent(rhythm)} |
         | Overall | {score_to_percent(overall)} |
         """
     )
@@ -600,9 +710,6 @@ def page_compare():
 
     st.divider()
 
-    def ending_label(entry):
-        ending_score = get_score_value(entry["results"], "ending_on_tonic")
-        return get_category(ending_score, "ending")
 
     comparison_rows = [
         ("Model", melody_a["model_display"], melody_b["model_display"]),
@@ -612,7 +719,6 @@ def page_compare():
         ("Moves smoothly", score_to_percent(get_score_value(melody_a["results"], "interval_smoothness")), score_to_percent(get_score_value(melody_b["results"], "interval_smoothness"))),
         ("Jumps around", score_to_percent(get_score_value(melody_a["results"], "interval_smoothness", inverse=True)), score_to_percent(get_score_value(melody_b["results"], "interval_smoothness", inverse=True))),
         ("Repeats ideas", score_to_percent(get_score_value(melody_a["results"], "motif_repetition")), score_to_percent(get_score_value(melody_b["results"], "motif_repetition"))),
-        ("Feels finished", ending_label(melody_a), ending_label(melody_b)),
         ("Varied beats", score_to_percent(get_score_value(melody_a["results"], "rhythmic_variety")), score_to_percent(get_score_value(melody_b["results"], "rhythmic_variety"))),
         ("Overall", score_to_percent(get_score_value(melody_a["results"], "final_score")), score_to_percent(get_score_value(melody_b["results"], "final_score"))),
     ]
@@ -729,7 +835,10 @@ def page_rule_mode():
 # Page: TRAINING MELODY Selection
 def page_training_melody():
     inject_global_ui_css()
-    render_page_header("Choose a training melody", "The selected melody becomes the source material for the model’s pitch-rhythm note events.")
+    render_page_header(
+        "Choose training data",
+        "Train on one large MelodyHub pack, or keep things small with a single built-in melody.",
+    )
     st.markdown(
         f'Selected Model: <span class="ml-selected-pill">{get_model_display_name(st.session_state.selected_model)}</span>',
         unsafe_allow_html=True,
@@ -739,37 +848,62 @@ def page_training_melody():
             f'Rule-Based Mode: <span class="ml-selected-pill">{(st.session_state.rule_mode or "strict").title()} Mode</span>',
             unsafe_allow_html=True,
         )
-        st.caption("For this model, the training melody sets the pitch-class pool and home note.")
+        st.caption("Rule-Based uses the original built-in single melodies only.")
+    if st.session_state.selected_model == "VariableMarkov":
+        st.caption("Variable Markov is limited to MelodyHub packs and Minuet, so it has enough repeated patterns to learn from.")
     st.divider()
 
-    if st.session_state.selected_model == "VariableMarkov":
-        melody_options = {data["name"]: key for key, data in TRAINING_MELODIES.items() if key == "minuet"}
-        st.caption("For now, Variable Markov only trains on Minuet. Later this can be replaced with the larger MelodyHub dataset.")
-    else:
-        melody_options = {data["name"]: key for key, data in TRAINING_MELODIES.items()}
+    available_sources = get_available_training_sources(st.session_state.selected_model)
+    pack_options = {key: data for key, data in available_sources.items() if data.get("source_type") == "pack"}
+    single_options = {key: data for key, data in available_sources.items() if data.get("source_type") == "single"}
 
-    cols = st.columns(3)
+    if pack_options:
+        st.write("### Melody packs")
+        pack_cols = st.columns(min(2, len(pack_options)))
+        for idx, (source_key, source_data) in enumerate(pack_options.items()):
+            with pack_cols[idx % len(pack_cols)]:
+                st.markdown(
+                    f"""
+                    <div class="ml-card">
+                        <div class="ml-card-title">{source_data['icon']} {source_data['name']}</div>
+                        <div class="ml-card-personality">{source_data['melody_count']} melodies · {source_data['note_count']} note-events</div>
+                        <div class="ml-card-text">{source_data['description']}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button(f"Train on {source_data['icon']} {source_data['name']}", use_container_width=True, key=f"btn_{source_key}"):
+                    st.session_state.selected_melody = source_key
+                    st.session_state.model_instance = None
+                    st.session_state.generated_melody = None
+                    st.session_state.scorecard_results = None
+                    st.session_state.page = "generate"
+                    st.rerun()
 
-    for idx, (melody_name, melody_key) in enumerate(melody_options.items()):
-        melody_data = TRAINING_MELODIES[melody_key]
-        note_count = len(melody_data.get("pitches", []))
-        melody_icon = get_training_melody_icon(melody_key, melody_data)
+    if single_options:
+        st.write("### Single melodies")
+        single_cols = st.columns(3)
+        for idx, (source_key, source_data) in enumerate(single_options.items()):
+            with single_cols[idx % 3]:
+                st.markdown(
+                    f"""
+                    <div class="ml-card">
+                        <div class="ml-card-title">{source_data['icon']} {source_data['name']}</div>
+                        <div class="ml-card-text">{source_data['note_count']} training notes</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button(f"Train on {source_data['icon']} {source_data['name']}", use_container_width=True, key=f"btn_{source_key}"):
+                    st.session_state.selected_melody = source_key
+                    st.session_state.model_instance = None
+                    st.session_state.generated_melody = None
+                    st.session_state.scorecard_results = None
+                    st.session_state.page = "generate"
+                    st.rerun()
 
-        with cols[idx % 3]:
-            st.markdown(
-                f"""
-                <div class="ml-card">
-                    <div class="ml-card-title">{melody_icon} {melody_name}</div>
-                    <div class="ml-card-text">{note_count} training notes</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if st.button(f"Train on {melody_icon} {melody_name}", use_container_width=True, key=f"btn_{melody_key}"):
-                st.session_state.selected_melody = melody_key
-                st.session_state.model_instance = None
-                st.session_state.page = "generate"
-                st.rerun()
+    if not available_sources:
+        st.error("No training data was found. Check that the JSON files are inside data/processed.")
 
     st.divider()
     if st.button("← Back to model selection", use_container_width=True):
@@ -794,7 +928,8 @@ def page_generate():
 
     render_page_header("Generate melody", "Review your setup, then create a melody from the selected model.")
 
-    melody_display = TRAINING_MELODIES[st.session_state.selected_melody]["name"]
+    selected_training_data = get_selected_training_data()
+    melody_display = selected_training_data["name"]
 
     st.session_state.melody_length = max(
         MIN_MELODY_LENGTH,
@@ -829,7 +964,7 @@ def page_generate():
     
     # Initialize model instance if needed - USE SELECTED MELODY
     if st.session_state.model_instance is None:
-        selected_melody_data = TRAINING_MELODIES[st.session_state.selected_melody]
+        selected_melody_data = get_selected_training_data()
         pitches = selected_melody_data["pitches"]
         rhythms = selected_melody_data["rhythms"]
         
@@ -861,7 +996,7 @@ def page_generate():
             )
         elif st.session_state.selected_model == "RuleBased":
             st.session_state.model_instance = RuleBasedMelodyGenerator(
-                training_melody_key=st.session_state.selected_melody,
+                training_melody_key=selected_melody_data.get("single_key", "minuet"),
                 mode=st.session_state.rule_mode or "strict"
             )
     
@@ -873,11 +1008,10 @@ def page_generate():
         st.session_state.play_learning_note = False
         
         # Evaluate melody with scorecard
-        selected_melody_data = TRAINING_MELODIES[st.session_state.selected_melody]
+        selected_melody_data = get_selected_training_data()
         training_melody = list(zip(selected_melody_data["pitches"], selected_melody_data["rhythms"]))
         d_max = infer_duration_vocab_size([training_melody])
-        home_note = get_training_home_note(st.session_state.selected_melody, selected_melody_data)
-        scorecard_results = evaluate_sequence(melody, d_max, home_note=home_note)
+        scorecard_results = evaluate_sequence(melody, d_max)
         st.session_state.scorecard_results = scorecard_results
         st.session_state.saved_history_index = save_current_melody_to_history(melody, scorecard_results) - 1
         
@@ -902,8 +1036,6 @@ def get_category(score, metric_type="standard"):
             return "Balanced"
         else:
             return "Repetitive"
-    elif metric_type == "ending":
-        return "Finished on Home Note" if score >= 0.5 else "Unresolved Ending"
     else:  # standard
         if score >= 0.7:
             return "High"
@@ -1082,8 +1214,9 @@ def note_to_frequency(note):
     if len(note) < 2:
         return 440.0
 
-    if len(note) >= 3 and note[1] in ["#", "b"]:
-        pitch_class = note[:2].upper()
+    if len(note) >= 3 and note[1] in ["#", "b", "-"]:
+        accidental = "B" if note[1] in ["b", "-"] else "#"
+        pitch_class = note[0].upper() + accidental
         octave_text = note[2:]
     else:
         pitch_class = note[0].upper()
@@ -1621,11 +1754,11 @@ def get_learning_step_info(model_name, model_instance, generated_events, generat
             pitch_classes = getattr(model_instance, "pitch_classes", [])
             style_name = getattr(getattr(model_instance, "settings", {}), "get", lambda k, d=None: d)("display_name", "selected style")
             return {
-                "memory": f"Starting home note. Style: {style_name}. Pitch pool: {', '.join(pitch_classes)}.",
+                "memory": f"Starting note. Style: {style_name}. Pitch pool: {', '.join(pitch_classes)}.",
                 "choices": [],
                 "selected": selected_pitch,
                 "selected_label": selected_pitch,
-                "explanation": f"The rule-based melody starts on {selected_pitch}, the home note for the selected style.",
+                "explanation": f"The rule-based melody starts on {selected_pitch}, the starting note for the selected style.",
                 "fallback": False,
                 "choice_kind": "rule",
             }
@@ -1714,7 +1847,7 @@ def render_choice_bars(choices, selected_item, choice_kind="probability"):
     if not choices:
         message = "No probability table is needed for this starting step."
         if choice_kind == "rule":
-            message = "No rule-score table is needed for the starting home note."
+            message = "No rule-score table is needed for the starting note."
         st.markdown(
             f"""
             <div class="learning-card-body">
@@ -1966,7 +2099,6 @@ def page_results():
     smoothness = results["interval_smoothness"]
     jumps = 1.0 - smoothness  # Inverse
     patterns = results["motif_repetition"]
-    ending = results["ending_on_tonic"]
     rhythm = results["rhythmic_variety"]
     overall = results["final_score"]
     
@@ -1981,7 +2113,7 @@ def page_results():
             <div class="score-hero-title">✨ Overall feel</div>
             <div class="score-hero-number">{overall_percent}/100</div>
             <div class="score-hero-subtitle">
-                Based on whether the melody moves smoothly, avoids too many jumps, repeats ideas, ends clearly, and uses varied beats.
+                Based on whether the melody moves smoothly, avoids too many jumps, repeats ideas, and uses varied beats.
                 Current level: <b>{overall_category}</b>.
             </div>
         </div>
@@ -2019,16 +2151,8 @@ def page_results():
             "🔁",
         )
 
-    row2_col1, row2_col2 = st.columns(2)
-    with row2_col1:
-        metric_card(
-            "Does it feel finished?",
-            ending,
-            get_category(ending, "ending"),
-            "Checks whether the melody lands on the home note, which often makes it feel resolved.",
-            "🏁",
-        )
-    with row2_col2:
+    rhythm_col, _spacer_col = st.columns([1, 2])
+    with rhythm_col:
         metric_card(
             "Are the beats varied?",
             rhythm,
@@ -2039,7 +2163,7 @@ def page_results():
 
     with st.expander("Explanation for nerds", expanded=False):
         st.markdown("""
-            Smoothness rewards mostly stepwise motion. Jumps is the inverse of smoothness, so a high jump score means the melody contains more large leaps. Patterns measures motif repetition. Ending checks whether the final note resolves on the selected training melody’s home note. Beat Variety combines rhythmic diversity with rhythmic patterning.
+            Smoothness rewards mostly stepwise motion. Jumps is the inverse of smoothness, so a high jump score means the melody contains more large leaps. Patterns measures motif repetition. Beat Variety combines rhythmic diversity with rhythmic patterning.
             """
         )
 

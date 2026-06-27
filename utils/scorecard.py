@@ -3,12 +3,12 @@ from collections import Counter, defaultdict
 
 # Pitch-class mapping for common note spellings
 PCLASS = {
-    "C": 0, "C#": 1, "Db": 1,
-    "D": 2, "D#": 3, "Eb": 3,
+    "C": 0, "C#": 1, "Db": 1, "D-": 1,
+    "D": 2, "D#": 3, "Eb": 3, "E-": 3,
     "E": 4,
-    "F": 5, "F#": 6, "Gb": 6,
-    "G": 7, "G#": 8, "Ab": 8,
-    "A": 9, "A#": 10, "Bb": 10,
+    "F": 5, "F#": 6, "Gb": 6, "G-": 6,
+    "G": 7, "G#": 8, "Ab": 8, "A-": 8,
+    "A": 9, "A#": 10, "Bb": 10, "B-": 10,
     "B": 11,
 }
 
@@ -56,7 +56,7 @@ def is_rest(note):
 def note_to_number(note):
     """
     Convert a pitch string to MIDI number (C4 = 60).
-    Supports sharps (#) and flats (b).
+    Supports sharps (#), normal flats (b), and MelodyHub/music21 flats (-).
     Octave must be specified at the end.
     Rests return None.
     """
@@ -104,44 +104,6 @@ def intervals_from_midi(midi_nums):
         return []
     return [midi_nums[i + 1] - midi_nums[i] for i in range(len(midi_nums) - 1)]
 
-
-def normalize_base_name(pitch):
-    """Return the pitch class name without octave."""
-    s = str(pitch).strip()
-    
-    if is_rest(s):
-        return "REST"
-    
-    i = len(s)
-    while i > 0 and s[i - 1].isdigit():
-        i -= 1
-    return s[:i]
-
-
-def ending_on_home_note(seq, home_note="G"):
-    """Check if melody ends on the expected home note."""
-    pitches = pitch_stream(seq)
-    non_rest_pitches = [p for p in pitches if not is_rest(p)]
-
-    if not non_rest_pitches:
-        return 0.0, {"home_note": home_note, "final_note": None}
-
-    final_note = normalize_base_name(non_rest_pitches[-1])
-    score = 1.0 if final_note == home_note else 0.0
-
-    return score, {
-        "home_note": home_note,
-        "final_note": non_rest_pitches[-1],
-    }
-
-
-def ending_on_tonic(seq, home_note="G"):
-    """
-    Backward-compatible name for the old scorecard key.
-    Internally, this now checks the selected training melody's home note
-    instead of trying to infer a Western tonic.
-    """
-    return ending_on_home_note(seq, home_note)
 
 
 def _nontrivial_pattern(values):
@@ -411,33 +373,32 @@ def rhythmic_variety(durations, d_max):
     }
 
 
-def evaluate_sequence(melody, d_max, home_note="G"):
+def evaluate_sequence(melody, d_max):
     """
-    Compute all evaluation metrics for a melody.
-    Returns a dictionary with all scores and metadata.
+    Compute evaluation metrics for a melody.
+
+    This scorecard currently uses four criteria: interval smoothness,
+    stepwise motion, motif repetition, and rhythmic variety.
     """
     seq = normalize_seq(melody)
     midi_seq = midi_stream(seq)
     intervals = intervals_from_midi(midi_seq)
     durations = durations_numeric(seq)
-    
-    end_score, end_meta = ending_on_home_note(seq, home_note)
+
     smooth_score, smooth_meta = interval_smoothness(intervals)
     step_score, step_meta = stepwise_motion(intervals)
     motif_score, motif_meta = motif_repetition(seq, intervals)
     rhythm_score, rhythm_meta = rhythmic_variety(durations, d_max)
-    
-    final_score = (end_score + smooth_score + step_score + motif_score + rhythm_score) / 5.0
-    
+
+    final_score = (smooth_score + step_score + motif_score + rhythm_score) / 4.0
+
     return {
-        "ending_on_tonic": end_score,
         "interval_smoothness": smooth_score,
         "stepwise_ratio": step_score,
         "motif_repetition": motif_score,
         "rhythmic_variety": rhythm_score,
         "final_score": final_score,
         "meta": {
-            "ending_on_tonic": end_meta,
             "interval_smoothness": smooth_meta,
             "stepwise_ratio": step_meta,
             "motif_repetition": motif_meta,
@@ -471,16 +432,3 @@ def categorize_score(score, category_type="standard"):
             return "Med", 5
         else:
             return "Low", 3
-
-
-def ending_category(score):
-    """
-    Categorize ending on tonic (binary).
-    
-    Returns:
-        Tuple of (category_name, bar_filled)
-    """
-    if score >= 0.5:
-        return "Finished on Tonic", 10
-    else:
-        return "Unresolved Ending", 0
