@@ -1,5 +1,7 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
+import altair as alt
 import io
 import wave
 import base64
@@ -711,23 +713,88 @@ def page_compare():
     st.divider()
 
 
-    comparison_rows = [
-        ("Model", melody_a["model_display"], melody_b["model_display"]),
-        ("Training Melody", melody_a["training_melody_name"], melody_b["training_melody_name"]),
-        ("Rule Mode", melody_a["rule_mode"].title() if melody_a.get("rule_mode") else "—", melody_b["rule_mode"].title() if melody_b.get("rule_mode") else "—"),
-        ("Length", f"{melody_a['length']} notes", f"{melody_b['length']} notes"),
-        ("Moves smoothly", score_to_percent(get_score_value(melody_a["results"], "interval_smoothness")), score_to_percent(get_score_value(melody_b["results"], "interval_smoothness"))),
-        ("Jumps around", score_to_percent(get_score_value(melody_a["results"], "interval_smoothness", inverse=True)), score_to_percent(get_score_value(melody_b["results"], "interval_smoothness", inverse=True))),
-        ("Repeats ideas", score_to_percent(get_score_value(melody_a["results"], "motif_repetition")), score_to_percent(get_score_value(melody_b["results"], "motif_repetition"))),
-        ("Varied beats", score_to_percent(get_score_value(melody_a["results"], "rhythmic_variety")), score_to_percent(get_score_value(melody_b["results"], "rhythmic_variety"))),
-        ("Overall", score_to_percent(get_score_value(melody_a["results"], "final_score")), score_to_percent(get_score_value(melody_b["results"], "final_score"))),
-    ]
-
     st.write("### Score comparison")
-    table_md = "| Feature | Melody A | Melody B |\n|---|---:|---:|\n"
-    for feature, value_a, value_b in comparison_rows:
-        table_md += f"| {feature} | {value_a} | {value_b} |\n"
-    st.markdown(table_md)
+
+    chart_df = pd.DataFrame(
+        [
+            {
+                "Metric": "Smoothness",
+                "Melody": "Melody A",
+                "Score": score_to_percent(get_score_value(melody_a["results"], "interval_smoothness")),
+            },
+            {
+                "Metric": "Smoothness",
+                "Melody": "Melody B",
+                "Score": score_to_percent(get_score_value(melody_b["results"], "interval_smoothness")),
+            },
+            {
+                "Metric": "Patterns",
+                "Melody": "Melody A",
+                "Score": score_to_percent(get_score_value(melody_a["results"], "motif_repetition")),
+            },
+            {
+                "Metric": "Patterns",
+                "Melody": "Melody B",
+                "Score": score_to_percent(get_score_value(melody_b["results"], "motif_repetition")),
+            },
+            {
+                "Metric": "Beat variety",
+                "Melody": "Melody A",
+                "Score": score_to_percent(get_score_value(melody_a["results"], "rhythmic_variety")),
+            },
+            {
+                "Metric": "Beat variety",
+                "Melody": "Melody B",
+                "Score": score_to_percent(get_score_value(melody_b["results"], "rhythmic_variety")),
+            },
+            {
+                "Metric": "Overall",
+                "Melody": "Melody A",
+                "Score": score_to_percent(get_score_value(melody_a["results"], "final_score")),
+            },
+            {
+                "Metric": "Overall",
+                "Melody": "Melody B",
+                "Score": score_to_percent(get_score_value(melody_b["results"], "final_score")),
+            },
+        ]
+    )
+
+    st.caption(
+        "Higher bars mean the melody scored better on that part of the music-theory check."
+    )
+
+    chart = (
+        alt.Chart(chart_df)
+        .mark_bar(size=30, cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+        .encode(
+            x=alt.X(
+                "Metric:N",
+                title=None,
+                sort=["Smoothness", "Patterns", "Beat variety", "Overall"],
+                axis=alt.Axis(labelAngle=0, labelFontSize=12),
+            ),
+            xOffset=alt.XOffset("Melody:N"),
+            y=alt.Y(
+                "Score:Q",
+                title="Score",
+                scale=alt.Scale(domain=[0, 100]),
+                axis=alt.Axis(values=[0, 25, 50, 75, 100]),
+            ),
+            color=alt.Color("Melody:N", title=None),
+            tooltip=[
+                alt.Tooltip("Melody:N", title="Melody"),
+                alt.Tooltip("Metric:N", title="Metric"),
+                alt.Tooltip("Score:Q", title="Score"),
+            ],
+        )
+        .properties(width=560, height=320)
+    )
+
+    chart_col, _ = st.columns([3, 2])
+    with chart_col:
+        st.altair_chart(chart, use_container_width=False)
+
 
     st.write("### Melody sequences")
     seq_col1, seq_col2 = st.columns(2)
