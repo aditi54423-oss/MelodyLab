@@ -14,6 +14,8 @@ Run:
     python scripts/preprocess_melodyhub.py
 """
 
+# rests are skipped
+
 from datasets import load_dataset
 from music21 import converter, note, chord
 from tqdm import tqdm
