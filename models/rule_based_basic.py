@@ -11,33 +11,33 @@ import random
 
 NOTE_TO_MIDI = {
     "A3": 57,
-    "Bb3": 58,
+    "B-3": 58,
     "B3": 59,
 
     "C4": 60,
     "C#4": 61,
     "D4": 62,
-    "Eb4": 63,
+    "E-4": 63,
     "E4": 64,
     "F4": 65,
     "F#4": 66,
     "G4": 67,
-    "Ab4": 68,
+    "A-4": 68,
     "A4": 69,
-    "Bb4": 70,
+    "B-4": 70,
     "B4": 71,
 
     "C5": 72,
     "C#5": 73,
     "D5": 74,
-    "Eb5": 75,
+    "E-5": 75,
     "E5": 76,
     "F5": 77,
     "F#5": 78,
     "G5": 79,
-    "Ab5": 80,
+    "A-5": 80,
     "A5": 81,
-    "Bb5": 82,
+    "B-5": 82,
     "B5": 83,
 }
 
@@ -66,7 +66,7 @@ STYLE_SETTINGS = {
     },
     "F": {
         "display_name": "F major",
-        "pitch_classes": ["F", "G", "A", "Bb", "C", "D", "E"],
+        "pitch_classes": ["F", "G", "A", "B-", "C", "D", "E"],
         "home_pitch_class": "F",
         "home_note": "F4",
         "min_midi": 60,
@@ -120,7 +120,7 @@ def get_pitch_class(note):
 
     Examples:
     A4   -> A
-    Bb4  -> Bb
+    B-4  -> B-
     F#5  -> F#
     REST -> REST
     """
@@ -129,7 +129,7 @@ def get_pitch_class(note):
     if note.upper().startswith("REST"):
         return "REST"
 
-    if len(note) >= 2 and note[1] in ["#", "b"]:
+    if len(note) >= 2 and note[1] in ["#", "-"]:
         return note[:2]
 
     return note[:1]

@@ -1,7 +1,9 @@
 import math
 from collections import Counter, defaultdict
 
-# Pitch-class mapping for common note spellings
+# Pitch-class mapping for common note spellings.
+# MelodyHub/music21 writes flats with "-" instead of "b"
+# Example: B-flat is "B-", so B-flat 4 is "B-4".
 
 PCLASS = {
     "C": 0,
@@ -19,7 +21,7 @@ PCLASS = {
     "F-": 4,
 
     "F": 5,
-    "E-": 5,
+    "E#": 5,
 
     "F#": 6,
     "G-": 6,
@@ -78,10 +80,11 @@ def is_rest(note):
     return str(note).upper().startswith("REST")
 
 
+
 def note_to_number(note):
     """
     Convert a pitch string to MIDI number (C4 = 60).
-    Supports sharps (#), normal flats (b), and MelodyHub/music21 flats (-).
+    Supports sharps (#) and MelodyHub/music21 flats (-).
     Octave must be specified at the end.
     Rests return None.
     """
