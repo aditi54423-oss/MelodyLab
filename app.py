@@ -1260,30 +1260,34 @@ def metric_card(title, score, category, help_text, icon="🎵"):
 
 # Helper: Convert generated melody into playable WAV audio
 def note_to_frequency(note):
-    """Convert a note name like G4 or F#5 into frequency in Hz."""
+    """Convert a note name like G4, F#5, or B-4 into frequency in Hz."""
     note = str(note).strip()
 
     # Treat rest tokens as silence.
     if note.upper().startswith("REST"):
         return None
 
-    # Support both sharps and flats.
+    # MelodyHub/music21 uses "-" for flats, e.g. B-4 = B-flat 4.
     semitone_map = {
-        "C": 0, "C#": 1, "DB": 1,
-        "D": 2, "D#": 3, "EB": 3,
-        "E": 4,
-        "F": 5, "F#": 6, "GB": 6,
-        "G": 7, "G#": 8, "AB": 8,
-        "A": 9, "A#": 10, "BB": 10,
-        "B": 11,
+        "C": 0, "B#": 0,
+        "C#": 1, "D-": 1,
+        "D": 2,
+        "D#": 3, "E-": 3,
+        "E": 4, "F-": 4,
+        "F": 5, "E#": 5,
+        "F#": 6, "G-": 6,
+        "G": 7,
+        "G#": 8, "A-": 8,
+        "A": 9,
+        "A#": 10, "B-": 10,
+        "B": 11, "C-": 11,
     }
 
     if len(note) < 2:
         return 440.0
 
-    if len(note) >= 3 and note[1] in ["#", "b", "-"]:
-        accidental = "B" if note[1] in ["b", "-"] else "#"
-        pitch_class = note[0].upper() + accidental
+    if len(note) >= 3 and note[1] in ["#", "-"]:
+        pitch_class = note[0].upper() + note[1]
         octave_text = note[2:]
     else:
         pitch_class = note[0].upper()
@@ -1299,7 +1303,6 @@ def note_to_frequency(note):
 
     midi_number = 12 * (octave + 1) + semitone_map[pitch_class]
     return 440.0 * (2 ** ((midi_number - 69) / 12))
-
 
 def melody_to_wav(melody, tempo=120):
     """Create an in-memory WAV file from [(pitch, duration), ...]."""
@@ -1430,7 +1433,7 @@ def autoplay_single_note(pitch, duration, tempo=120):
             <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
         </audio>
         """,
-        height=0,
+        height=1,
     )
 
 
