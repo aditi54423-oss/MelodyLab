@@ -20,6 +20,17 @@ APP_DIR = Path(__file__).resolve().parent
 LOGO_FILE = APP_DIR / "melodylab_logo.png"
 FAVICON_FILE = APP_DIR / "melodylab_favicon.png"
 DATA_DIR = APP_DIR / "data" / "processed"
+MODEL_ICON_DIR = APP_DIR / "model_icons"
+
+MODEL_ICON_FILES = {
+    "Random": MODEL_ICON_DIR / "random_logo.png",
+    "WeightedRandom": MODEL_ICON_DIR / "weighted_random_logo.png",
+    "RuleBased": MODEL_ICON_DIR / "rule_based_logo.png",
+    "Markov1": MODEL_ICON_DIR / "order1_logo.png",
+    "Markov2": MODEL_ICON_DIR / "order2_logo.png",
+    "VariableMarkov": MODEL_ICON_DIR / "VMM_logo.png",
+}
+
 if not DATA_DIR.exists():
     DATA_DIR = Path("C:/Users/Poonam-hp/Documents/GitHub/MelodyLab/data/processed")
 
@@ -83,6 +94,22 @@ def get_logo_markup():
         logo_data = base64.b64encode(LOGO_FILE.read_bytes()).decode("utf-8")
         return f'<img class="ml-logo-img" src="data:image/png;base64,{logo_data}" alt="MelodyLab logo" />'
     return '<div class="ml-logo">ML</div>'
+
+
+def get_model_icon_markup(model_key):
+    """Return a generous model icon for the home-page card."""
+    icon_path = MODEL_ICON_FILES.get(model_key)
+
+    if icon_path and icon_path.exists():
+        icon_data = base64.b64encode(icon_path.read_bytes()).decode("utf-8")
+        return (
+            '<div class="model-logo-shell">'
+            f'<img class="model-logo-img" src="data:image/png;base64,{icon_data}" '
+            f'alt="{MODEL_UI.get(model_key, {}).get("name", model_key)} icon" />'
+            '</div>'
+        )
+
+    return '<div class="model-logo-shell model-logo-fallback">♪</div>'
 
 
 def get_training_melody_icon(melody_key, melody_data):
@@ -350,6 +377,70 @@ def inject_global_ui_css():
             border: 1px solid rgba(148, 163, 184, 0.25);
             box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
             margin-bottom: 0.8rem;
+        }
+        .model-card {
+            height: 320px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+        }
+        .model-card-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 0.9rem;
+        }
+        .model-card-heading {
+            min-width: 0;
+            flex: 1;
+        }
+        .model-logo-shell {
+            width: 108px;
+            height: 108px;
+            flex: 0 0 108px;
+            overflow: hidden;
+            border-radius: 26px;
+            background: #f5f3ff;
+            border: 1px solid rgba(124, 58, 237, 0.13);
+            box-shadow:
+                inset 0 0 0 1px rgba(255,255,255,0.55),
+                0 12px 24px rgba(91, 33, 182, 0.12);
+        }
+        .model-logo-img {
+            width: 100%;
+            height: 100%;
+            display: block;
+            object-fit: cover;
+        }
+        .model-logo-fallback {
+            display: grid;
+            place-items: center;
+            color: #6d28d9;
+            font-size: 2.6rem;
+            font-weight: 900;
+        }
+        .model-card .ml-card-title {
+            font-size: 1.15rem;
+            line-height: 1.15;
+            margin-bottom: 0.32rem;
+        }
+        .model-card .ml-card-personality {
+            margin-bottom: 0;
+        }
+        .model-card .ml-card-text {
+            font-size: 0.92rem;
+            line-height: 1.42;
+        }
+        @media (max-width: 900px) {
+            .model-card {
+                height: auto;
+                min-height: 300px;
+            }
+            .model-logo-shell {
+                width: 94px;
+                height: 94px;
+                flex-basis: 94px;
+            }
         }
         .ml-card-title {
             font-size: 1.05rem;
@@ -813,29 +904,39 @@ def page_home():
     render_brand_hero()
     render_page_header("Choose a model", "Each model has a different composing personality. Start with one and compare the results later.")
 
-    cols = st.columns(6)
-    model_keys = ["Random", "WeightedRandom", "RuleBased", "Markov1", "Markov2", "VariableMarkov"]
-    for col, model_key in zip(cols, model_keys):
-        info = MODEL_UI[model_key]
-        with col:
-            st.markdown(
-                f"""
-                <div class="ml-card">
-                    <div class="ml-card-title">{info['name']}</div>
-                    <div class="ml-card-personality">{info['personality']}</div>
-                    <div class="ml-card-text">{info['meaning']}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if st.button(info["button"], use_container_width=True, key=f"btn_{model_key}"):
-                st.session_state.selected_model = model_key
-                st.session_state.model_instance = None
-                if model_key == "RuleBased":
-                    st.session_state.page = "rule_mode"
-                else:
-                    st.session_state.page = "training_melody"
-                st.rerun()
+    model_rows = [
+    ["Random", "WeightedRandom", "RuleBased"],
+    ["Markov1", "Markov2", "VariableMarkov"],]
+    for row in model_rows:
+        cols = st.columns(3)    
+
+        for col, model_key in zip(cols, row):
+            info = MODEL_UI[model_key]
+            icon_markup = get_model_icon_markup(model_key)
+            with col:
+                st.markdown(
+                    f"""
+                    <div class="ml-card model-card">
+                        <div class="model-card-header">
+                            {icon_markup}
+                            <div class="model-card-heading">
+                                <div class="ml-card-title">{info['name']}</div>
+                                <div class="ml-card-personality">{info['personality']}</div>
+                            </div>
+                        </div>
+                        <div class="ml-card-text">{info['meaning']}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button(info["button"], use_container_width=True, key=f"btn_{model_key}", type="primary"):
+                    st.session_state.selected_model = model_key
+                    st.session_state.model_instance = None
+                    if model_key == "RuleBased":
+                        st.session_state.page = "rule_mode"
+                    else:
+                        st.session_state.page = "training_melody"
+                    st.rerun()
 
     if st.session_state.melody_history:
         st.divider()
