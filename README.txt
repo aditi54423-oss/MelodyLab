@@ -21,11 +21,12 @@ https://melodylab-a6rpsxsngnegcrawpzmk3r.streamlit.app/
 ## How It Works
 
 1. Choose a model
-2. Choose a training melody
+2. Choose a training melody/melody pack
 3. Generate a melody
 4. Listen to the result
 5. Analyze the scorecard
 6. Watch how it was composed
+7. Compare melodies
 
 ## Run Locally
 
