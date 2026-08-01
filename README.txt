@@ -2,7 +2,7 @@
 
 Can Math Make Music?
 
-MelodyLab is an interactive web app that lets users generate melodies using different computational models, compare their musical behavior, and watch how the melodies were composed note by note.
+MelodyLab is an interactive web app that lets users generate and compare melodies using different computational models, compare their musical behavior, and watch how the melodies were composed note by note.
 
 ## Live Demo
 
@@ -10,10 +10,7 @@ https://melodylab-a6rpsxsngnegcrawpzmk3r.streamlit.app/
 
 ## Features
 
-- Random melody generation
-- Rule-based melody generation
-- First-order Markov model
-- Second-order Markov model
+- Various mathematical/probabilistic models
 - Music-theory scorecard
 - Interactive composition replay
 - Built-in melody playback
