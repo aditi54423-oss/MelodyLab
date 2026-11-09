@@ -744,7 +744,18 @@ def page_history():
 
         with st.expander(f"Open Melody {original_index + 1}", expanded=False):
             st.write("#### Play melody")
-            render_play_melody_button(melody_to_wav(entry["melody"], tempo=120))
+            saved_audio_bytes = melody_to_wav(entry["melody"], tempo=120)
+            render_play_melody_button(saved_audio_bytes)
+            render_melody_downloads(
+                entry["melody"],
+                saved_audio_bytes,
+                filename_stem=f"melodylab_saved_melody_{original_index + 1}",
+                key_prefix=f"history_download_{original_index}",
+                model_name=entry["model_display"],
+                training_name=entry["training_melody_name"],
+                tempo=120,
+                rule_mode=entry.get("rule_mode"),
+            )
             st.write("#### Scorecard")
             show_saved_melody_scorecard(entry)
 
@@ -1445,6 +1456,107 @@ def melody_to_wav(melody, tempo=120):
 
     wav_buffer.seek(0)
     return wav_buffer.getvalue()
+
+
+def melody_to_text_bytes(
+    melody,
+    model_name="Unknown Model",
+    training_name="Unknown Training Data",
+    tempo=120,
+    rule_mode=None,
+):
+    """Create a clean, readable text note sheet for downloading."""
+    lines = [
+        "MELODYLAB GENERATED MELODY",
+        "=" * 28,
+        "",
+        f"Model: {model_name}",
+        f"Training Data: {training_name}",
+    ]
+
+    if rule_mode:
+        lines.append(f"Rule-Based Mode: {str(rule_mode).title()}")
+
+    lines.extend(
+        [
+            f"Melody Length: {len(melody)} notes",
+            f"Tempo: {tempo} BPM",
+            "",
+            "NOTES",
+            "-" * 28,
+        ]
+    )
+
+    for index, (pitch, duration) in enumerate(melody, start=1):
+        duration_value = float(duration)
+        duration_text = f"{duration_value:g}"
+        beat_word = "beat" if duration_value == 1.0 else "beats"
+        lines.append(f"{index:>2}. {pitch:<5} — {duration_text} {beat_word}")
+
+    lines.extend(
+        [
+            "",
+            "SEQUENCE",
+            "-" * 28,
+            "  ".join(str(pitch) for pitch, _duration in melody),
+            "",
+            "Generated with MelodyLab.",
+        ]
+    )
+
+    return "\n".join(lines).encode("utf-8")
+
+
+def safe_download_name(value):
+    """Convert a label into a simple filename-safe slug."""
+    cleaned = "".join(
+        character.lower() if character.isalnum() else "_"
+        for character in str(value)
+    )
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "melody"
+
+
+def render_melody_downloads(
+    melody,
+    audio_bytes,
+    filename_stem="melodylab_melody",
+    key_prefix="melody_download",
+    model_name="Unknown Model",
+    training_name="Unknown Training Data",
+    tempo=120,
+    rule_mode=None,
+):
+    """Render WAV audio and readable TXT note-sheet download buttons."""
+    filename_stem = safe_download_name(filename_stem)
+    audio_col, notes_col = st.columns(2)
+
+    with audio_col:
+        st.download_button(
+            label="⬇️ Download Audio (WAV)",
+            data=audio_bytes,
+            file_name=f"{filename_stem}.wav",
+            mime="audio/wav",
+            use_container_width=True,
+            key=f"{key_prefix}_wav",
+        )
+
+    with notes_col:
+        st.download_button(
+            label="📝 Download Melody Notes (TXT)",
+            data=melody_to_text_bytes(
+                melody,
+                model_name=model_name,
+                training_name=training_name,
+                tempo=tempo,
+                rule_mode=rule_mode,
+            ),
+            file_name=f"{filename_stem}_notes.txt",
+            mime="text/plain",
+            use_container_width=True,
+            key=f"{key_prefix}_txt",
+        )
 
 
 def render_play_melody_button(audio_bytes):
@@ -2255,6 +2367,22 @@ def page_results():
 
     audio_bytes = melody_to_wav(melody, tempo=120)
     render_play_melody_button(audio_bytes)
+
+    selected_training_name = get_training_display_name(st.session_state.selected_melody)
+    download_stem = (
+        f"melodylab_{st.session_state.selected_model}_"
+        f"{selected_training_name}_{len(melody)}_notes"
+    )
+    render_melody_downloads(
+        melody,
+        audio_bytes,
+        filename_stem=download_stem,
+        key_prefix="results_download",
+        model_name=get_model_display_name(st.session_state.selected_model),
+        training_name=selected_training_name,
+        tempo=120,
+        rule_mode=st.session_state.rule_mode,
+    )
 
     cols = st.columns(8)
     for i, (pitch, duration) in enumerate(melody):
