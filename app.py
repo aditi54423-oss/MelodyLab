@@ -1560,74 +1560,147 @@ def render_melody_downloads(
 
 
 def render_play_melody_button(audio_bytes):
-    """Render a prominent button that plays the generated melody."""
+    """Render play, pause, and stop controls for the generated melody."""
     audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
     st.iframe(
         f"""
         <style>
             .melody-player {{
                 display: flex;
                 align-items: center;
-                gap: 0.85rem;
+                gap: 0.65rem;
                 padding: 0.9rem 1rem;
                 border: 1px solid rgba(148, 163, 184, 0.28);
                 border-radius: 8px;
                 background: #ffffff;
                 box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
                 font-family: "Source Sans Pro", sans-serif;
+                flex-wrap: wrap;
             }}
-            .play-melody-button {{
+
+            .melody-control-button {{
                 border: 0;
                 border-radius: 8px;
                 padding: 0.7rem 1rem;
-                background: #2563eb;
                 color: #ffffff;
                 font-size: 0.95rem;
                 font-weight: 700;
                 cursor: pointer;
-                min-width: 145px;
             }}
+
+            .play-melody-button {{
+                background: #2563eb;
+            }}
+
+            .pause-melody-button {{
+                background: #7c3aed;
+            }}
+
+            .stop-melody-button {{
+                background: #475569;
+            }}
+
             .play-melody-button:hover {{
                 background: #1d4ed8;
             }}
+
+            .pause-melody-button:hover {{
+                background: #6d28d9;
+            }}
+
+            .stop-melody-button:hover {{
+                background: #334155;
+            }}
+
             .play-melody-status {{
                 color: #475569;
                 font-size: 0.92rem;
                 line-height: 1.25;
+                margin-left: 0.25rem;
             }}
         </style>
+
         <div class="melody-player">
-            <button class="play-melody-button" type="button" id="play-melody">
-                ▶ Play Melody
+
+            <button
+                class="melody-control-button play-melody-button"
+                type="button"
+                id="play-melody"
+            >
+                ▶ Play
             </button>
-            <span class="play-melody-status" id="play-status">Ready to play the generated melody.</span>
+
+            <button
+                class="melody-control-button pause-melody-button"
+                type="button"
+                id="pause-melody"
+            >
+                ⏸ Pause
+            </button>
+
+            <button
+                class="melody-control-button stop-melody-button"
+                type="button"
+                id="stop-melody"
+            >
+                ⏹ Stop
+            </button>
+
+            <span class="play-melody-status" id="play-status">
+                Ready to play the generated melody.
+            </span>
+
             <audio id="melody-audio" preload="auto">
-                <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
+                <source
+                    src="data:audio/wav;base64,{audio_base64}"
+                    type="audio/wav"
+                >
             </audio>
+
         </div>
+
         <script>
-            const button = document.getElementById("play-melody");
+            const playButton = document.getElementById("play-melody");
+            const pauseButton = document.getElementById("pause-melody");
+            const stopButton = document.getElementById("stop-melody");
+
             const status = document.getElementById("play-status");
             const audio = document.getElementById("melody-audio");
 
-            button.addEventListener("click", async () => {{
-                audio.currentTime = 0;
+
+            playButton.addEventListener("click", async () => {{
                 try {{
                     await audio.play();
                     status.textContent = "Playing melody...";
                 }} catch (error) {{
-                    status.textContent = "Your browser blocked playback. Try clicking the button again.";
+                    status.textContent =
+                        "Your browser blocked playback. Try clicking Play again.";
                 }}
             }});
 
+
+            pauseButton.addEventListener("click", () => {{
+                audio.pause();
+                status.textContent = "Melody paused.";
+            }});
+
+
+            stopButton.addEventListener("click", () => {{
+                audio.pause();
+                audio.currentTime = 0;
+                status.textContent = "Melody stopped.";
+            }});
+
+
             audio.addEventListener("ended", () => {{
+                audio.currentTime = 0;
                 status.textContent = "Ready to play the generated melody.";
             }});
         </script>
         """,
-        height=90,
+        height=100,
     )
-
 
 def autoplay_single_note(pitch, duration, tempo=120):
     """
